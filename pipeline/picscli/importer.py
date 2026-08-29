@@ -158,6 +158,37 @@ def _process_video_frame(item: MediaMeta, album_dir: Path) -> tuple[album_mod.Fr
     ), (thumb_w, thumb_h)
 
 
+def burst_real_seconds(group: list[MediaMeta]) -> float:
+    return (group[-1].captured_at - group[0].captured_at).total_seconds()
+
+
+def _build_clip(group: list[MediaMeta], frames: list[album_mod.Frame], album_dir: Path, burst_id: str) -> str | None:
+    """Render the burst at the speed it happened, from EXIF timings."""
+    clip_rel = f"clip/{burst_id}.mp4"
+    clip_path = album_dir / clip_rel
+    if clip_path.exists():
+        return clip_rel
+
+    gaps = [
+        (group[i + 1].captured_at - group[i].captured_at).total_seconds()
+        for i in range(len(group) - 1)
+    ]
+    if not gaps:
+        return None
+    # The last frame has no following shot to measure against, so it is
+    # held for the burst's typical gap.
+    typical = sorted(gaps)[len(gaps) // 2]
+    holds = [*gaps, typical]
+
+    timed = [(album_dir / f.display, hold) for f, hold in zip(frames, holds) if f.display]
+    if len(timed) < 2:
+        return None
+    imaging.make_burst_mp4(
+        timed, clip_path, height=config.BURST_MP4_HEIGHT, fps=config.BURST_MP4_FPS
+    )
+    return clip_rel
+
+
 def _build_preview(group: list[MediaMeta], frames: list[album_mod.Frame], album_dir: Path, burst_id: str) -> str | None:
     preview_rel = f"preview/{burst_id}.webp"
     preview_path = album_dir / preview_rel
@@ -194,9 +225,11 @@ def run_import(
     title: str | None = None,
     album_id: str | None = None,
     jobs: int | None = None,
+    mp4_min_seconds: float | None = None,
     log: Logger = _default_log,
 ) -> str:
     jobs = jobs or default_jobs()
+    mp4_min_seconds = config.BURST_MP4_MIN_SECONDS if mp4_min_seconds is None else mp4_min_seconds
     tool_errors = metadata.check_tools_available()
     if tool_errors:
         raise RuntimeError("missing required tools:\n" + "\n".join(f"  - {e}" for e in tool_errors))
@@ -292,6 +325,26 @@ def run_import(
         )
         preview_by_group = {preview_tasks[i][0]: rel for i, rel in previews.items()}
 
+        # Bursts worth watching as a clip: long enough in real time that
+        # playing them back at true speed actually shows the motion.
+        clip_tasks = [
+            (gi, group, [frames_by_group[gi][fi] for fi in sorted(frames_by_group[gi])])
+            for gi, group in enumerate(groups)
+            if group[0].kind == "photo"
+            and len(group) > 1
+            and burst_real_seconds(group) >= mp4_min_seconds
+        ]
+        if clip_tasks:
+            log(f"rendering {len(clip_tasks)} real-time clip(s)...")
+        clips = _run_parallel(
+            clip_tasks,
+            lambda t: _build_clip(t[1], t[2], album_dir, f"b{t[0]:04d}"),
+            jobs,
+            label="clips",
+            log=log,
+        )
+        clip_by_group = {clip_tasks[i][0]: rel for i, rel in clips.items()}
+
         for gi, group in enumerate(groups):
             ordered = [frames_by_group[gi][fi] for fi in sorted(frames_by_group[gi])]
             bursts.append(
@@ -303,6 +356,7 @@ def run_import(
                     thumb_h=dims_by_group[gi][1],
                     frames=ordered,
                     preview=preview_by_group.get(gi),
+                    clip=clip_by_group.get(gi),
                     cover_index=0,
                 )
             )

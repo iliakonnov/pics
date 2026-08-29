@@ -35,6 +35,7 @@ class Burst:
     thumb_h: int
     frames: list[Frame]
     preview: str | None = None  # animated webp, relative path; None for single-frame photo bursts
+    clip: str | None = None  # real-time mp4, for bursts long enough to be worth one
     cover_index: int = 0
 
 
@@ -54,6 +55,7 @@ def build_album_json(*, album_id: str, title: str, date: str, bursts: list[Burst
                 "thumbW": b.thumb_w,
                 "thumbH": b.thumb_h,
                 "preview": b.preview,
+                "clip": b.clip,
                 "frames": [
                     {
                         "hash": f.hash,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from . import config
@@ -125,6 +126,49 @@ def make_animated_webp(frame_paths: list[Path], dst: Path, *, fps: int = config.
     cmd += [str(frame) for frame in frame_paths]
     cmd += ["-o", str(dst)]
     _run(cmd)
+
+
+def make_burst_mp4(frames: list[tuple[Path, float]], dst: Path, *, height: int = 1080, fps: int = 30) -> None:
+    """Render a burst as a clip that runs at the speed it was shot.
+
+    `frames` is [(image path, seconds to hold it)], taken from the gaps
+    between EXIF capture times, so uneven pacing inside a burst is
+    preserved. ffmpeg's concat demuxer accepts those per-frame durations;
+    the result is then resampled to a constant frame rate, because a
+    variable-frame-rate MP4 is played back inconsistently across devices.
+    """
+    if len(frames) < 2:
+        raise ValueError("need at least 2 frames for a burst clip")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as listing:
+        for path, hold in frames:
+            listing.write(f"file '{path.resolve()}'\n")
+            listing.write(f"duration {hold:.4f}\n")
+        # The concat demuxer ignores the final duration unless the last
+        # file is named twice.
+        listing.write(f"file '{frames[-1][0].resolve()}'\n")
+        listing_path = Path(listing.name)
+
+    try:
+        _run(
+            [
+                config.FFMPEG_BIN,
+                "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(listing_path),
+                "-vf", f"fps={fps},scale=-2:'min({height},ih)'",
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "20",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                str(dst),
+            ]
+        )
+    finally:
+        listing_path.unlink(missing_ok=True)
 
 
 def probe_video_duration(src: Path) -> float:

@@ -57,15 +57,33 @@ def main() -> None:
 @click.option("--title", default=None, help="Album title (default: capture date)")
 @click.option("--album-id", default=None, help="Reuse a specific album id (to resume an interrupted import)")
 @click.option("-j", "--jobs", default=None, type=int, help="Parallel workers (default: one per core)")
+@click.option(
+    "--mp4-min-seconds",
+    default=None,
+    type=float,
+    help="Offer a real-time MP4 for bursts spanning at least this long "
+    f"(default {config.BURST_MP4_MIN_SECONDS}; 0 disables)",
+)
 @library_option
 def import_cmd(
-    card_root: Path, title: str | None, album_id: str | None, jobs: int | None, library: str | None
+    card_root: Path,
+    title: str | None,
+    album_id: str | None,
+    jobs: int | None,
+    mp4_min_seconds: float | None,
+    library: str | None,
 ) -> None:
     """Import JPEGs/videos from CARD_ROOT as one new album."""
     settings = _settings(library)
     try:
         result_id = importer.run_import(
-            card_root, settings, title=title, album_id=album_id, jobs=jobs, log=click.echo
+            card_root,
+            settings,
+            title=title,
+            album_id=album_id,
+            jobs=jobs,
+            mp4_min_seconds=mp4_min_seconds,
+            log=click.echo,
         )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc

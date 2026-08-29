@@ -535,6 +535,79 @@ def portrait_fit_test(browser):
     page.close()
 
 
+def placeholder_test(browser):
+    print("placeholders: every unloaded picture still shows it has a slot")
+    # No watch(): the aborted requests below are the point of the test, and
+    # their console noise is not a failure.
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+
+    # Hold every picture back so the placeholders are what's on screen.
+    page.route("**/thumb/**", lambda route: route.abort())
+    page.route("**/medium/**", lambda route: route.abort())
+    page.route("**/display/**", lambda route: route.abort())
+
+    page.goto(ALBUM)
+    page.wait_for_selector(".burst-tile")
+    page.wait_for_timeout(700)
+
+    def painted(selector):
+        return page.eval_on_selector(
+            selector,
+            """el => {
+                const s = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return {
+                    colour: s.backgroundColor,
+                    icon: s.backgroundImage !== 'none',
+                    sized: rect.width > 20 && rect.height > 20,
+                };
+            }""",
+        )
+
+    tile = painted(".burst-tile")
+    check("unloaded grid tile keeps its slot", tile["sized"], str(tile))
+    check("unloaded grid tile has a backdrop", tile["colour"] != "rgba(0, 0, 0, 0)", str(tile))
+    check("unloaded grid tile shows an image glyph", tile["icon"], str(tile))
+    shot(page, "23-placeholders-grid")
+
+    page.query_selector_all(".burst-tile")[0].click()
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(700)
+
+    thumb = painted(".filmstrip-thumb")
+    check("unloaded filmstrip thumb keeps its slot", thumb["sized"], str(thumb))
+    check("unloaded filmstrip thumb has a backdrop", thumb["colour"] != "rgba(0, 0, 0, 0)", str(thumb))
+    check("unloaded filmstrip thumb shows an image glyph", thumb["icon"], str(thumb))
+
+    check(
+        "stage marks itself as loading",
+        page.eval_on_selector("#viewer-media", "el => el.classList.contains('loading')"),
+    )
+    check(
+        "stage placeholder is actually painted",
+        page.eval_on_selector(
+            "#viewer-media",
+            "el => getComputedStyle(el, '::before').opacity === '1'",
+        ),
+    )
+    shot(page, "24-placeholders-viewer")
+    page.close()
+
+    # ...and it gets out of the way once the picture is there.
+    page2 = browser.new_page(viewport={"width": 1280, "height": 900})
+    watch(page2, "placeholder-loaded")
+    page2.goto(ALBUM)
+    page2.wait_for_selector(".burst-tile")
+    page2.query_selector_all(".burst-tile")[0].click()
+    page2.wait_for_selector("#viewer:not([hidden])")
+    page2.wait_for_timeout(1200)
+    check(
+        "stage stops showing the placeholder once loaded",
+        not page2.eval_on_selector("#viewer-media", "el => el.classList.contains('loading')"),
+    )
+    page2.close()
+
+
 def video_swipe_test(browser):
     print("mobile: swipe on a video burst (outside the player)")
     page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
@@ -563,6 +636,7 @@ with sync_playwright() as p:
     zoom_tests(browser)
     shuttle_hint_test(browser)
     portrait_fit_test(browser)
+    placeholder_test(browser)
     video_swipe_test(browser)
     browser.close()
 

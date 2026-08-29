@@ -41,6 +41,7 @@ export function initViewer(bursts) {
   const closeBtn = document.getElementById("viewer-close");
   const info = document.getElementById("viewer-info");
   const downloadLink = document.getElementById("viewer-download");
+  const clipLink = document.getElementById("viewer-clip");
   const stage = document.getElementById("viewer-stage");
   const prevBurstBtn = document.getElementById("viewer-prev-burst");
   const nextBurstBtn = document.getElementById("viewer-next-burst");
@@ -144,6 +145,7 @@ export function initViewer(bursts) {
     ty = 0;
 
     if (frame.video) {
+      mediaHost.classList.remove("loading");
       mediaHost.innerHTML = "";
       mediaHost.append(el("video", { src: frame.video, poster: frame.thumb, controls: true, playsinline: true }));
       return;
@@ -160,6 +162,24 @@ export function initViewer(bursts) {
     img.style.transform = "";
     img.classList.remove("zoomed");
     if (img.getAttribute("src") !== src) img.setAttribute("src", src);
+    markStageLoading(img);
+  }
+
+  /**
+   * Show the placeholder behind the stage until the picture is painted.
+   * Nearly every frame is preloaded and decodes instantly, so the marker
+   * is applied only when the image genuinely is not ready — otherwise it
+   * would flicker on every frame change.
+   */
+  function markStageLoading(img) {
+    if (img.complete && img.naturalWidth) {
+      mediaHost.classList.remove("loading");
+      return;
+    }
+    mediaHost.classList.add("loading");
+    // Only a successful load clears it: if the picture never arrives, the
+    // placeholder is exactly what should stay on screen.
+    img.addEventListener("load", () => mediaHost.classList.remove("loading"), { once: true });
   }
 
   function updateChrome() {
@@ -182,6 +202,18 @@ export function initViewer(bursts) {
 
     downloadLink.href = frame.original;
     downloadLink.setAttribute("download", frame.original.split("/").pop());
+
+    // Bursts long enough to be worth watching get a real-time clip.
+    if (clipLink) {
+      if (burst.clip) {
+        clipLink.hidden = false;
+        clipLink.href = burst.clip;
+        clipLink.setAttribute("download", `${burst.id}.mp4`);
+      } else {
+        clipLink.hidden = true;
+        clipLink.removeAttribute("href");
+      }
+    }
 
     prevBurstBtn.disabled = burstIndex === 0;
     nextBurstBtn.disabled = burstIndex === bursts.length - 1;

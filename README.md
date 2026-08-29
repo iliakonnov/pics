@@ -150,6 +150,19 @@ again later into a fresh album.
   medium copy averages 106KB (2.5MB per burst) and still covers a phone
   screen at 3x DPR, which is what the viewer preloads and animates.
 
+- **Burst clips**: a burst that spans at least `--mp4-min-seconds` of real
+  shooting time is also rendered as an MP4 that plays at the speed it
+  happened. Frame timings come from EXIF `SubSecTimeOriginal`, which the
+  ZV-1 writes on every frame, so uneven pacing within a burst survives;
+  ffmpeg's concat demuxer takes the per-frame durations and the result is
+  resampled to constant 30fps, because variable-frame-rate MP4 plays back
+  inconsistently across devices.
+
+  Pick the threshold from the data: the camera fires fast, so bursts are
+  short in *real* time even when they hold many frames. Of 283 multi-frame
+  bursts in a 965-photo album, 1 spans over 1.5s, 14 over 0.5s and 56 over
+  0.3s.
+
 - **Publishing** (`picscli/upload.py`): content-hash-named media gets
   `Cache-Control: public, max-age=31536000, immutable`; HTML/JSON/JS/CSS get
   `no-cache`. The bucket is public-read (per your choice — no signed URLs).

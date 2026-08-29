@@ -83,7 +83,15 @@ PREVIEW_WEBP_FPS = 8  # frames per second in the generated animation
 VIDEO_MAX_HEIGHT = 1080
 VIDEO_CRF = 23
 VIDEO_AUDIO_BITRATE = "128k"
-VIDEO_PREVIEW_SAMPLE_FRAMES = 16  # frames sampled across the clip for the animated preview
+VIDEO_PREVIEW_SAMPLE_FRAMES = 16
+
+# A burst is also offered as a real-time MP4 when it spans at least this
+# many seconds of actual shooting. The ZV-1 fires fast: at 10fps a
+# 10-frame burst is only 0.9s, so this threshold decides how many clips
+# an album gets. See --mp4-min-seconds.
+BURST_MP4_MIN_SECONDS = 1.5
+BURST_MP4_HEIGHT = 1080
+BURST_MP4_FPS = 30  # frames sampled across the clip for the animated preview
 
 JPEG_ORIGINAL_QUALITY_NOTE = "originals are re-encoded losslessly to progressive JPEG (jpegtran), pixels unchanged"
 

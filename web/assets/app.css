@@ -6,6 +6,10 @@
   --muted: #9a9aa0;
   --accent: #eae6da;
   --border: #2a2a2e;
+  /* Shown wherever a picture has not arrived yet, so its slot always reads
+     as "an image belongs here" rather than as empty space. */
+  --placeholder: #1b1b1f;
+  --placeholder-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-opacity='0.28' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='2.5'/%3E%3Ccircle cx='8.5' cy='9.5' r='1.6'/%3E%3Cpath d='M4 17.5l4.5-4.5 3.5 3.5 3-2.5 5 4'/%3E%3C/svg%3E");
   --radius: 10px;
   --gap: 6px;
   --safe-top: env(safe-area-inset-top, 0px);
@@ -85,7 +89,6 @@ main {
 /* Justified rows: widths and heights are written by justifyRows() in JS,
    because CSS alone cannot fill a row edge-to-edge with mixed portrait
    and landscape frames. */
-.albums-grid,
 .burst-grid {
   display: flex;
   flex-wrap: wrap;
@@ -93,13 +96,11 @@ main {
   align-content: flex-start;
 }
 
-.album-card,
 .burst-tile {
   position: relative;
   flex: 0 0 auto;
   overflow: hidden;
   border-radius: var(--radius);
-  background: var(--bg-elevated);
   cursor: pointer;
   display: block;
   padding: 0;
@@ -107,19 +108,16 @@ main {
   color: inherit;
 }
 
-.album-card img,
 .burst-tile img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
-  background: var(--bg-elevated);
   -webkit-user-drag: none;
 }
 
 /* Holding a finger on a tile peeks at its animation, so the long-press
    selection callout / "save image" sheet must not fire. */
-.album-card,
 .burst-tile {
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
@@ -131,18 +129,45 @@ main {
   inset: 0;
 }
 
-.album-card .card-caption {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 10px 12px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
-  font-size: 13px;
+/* One placeholder treatment everywhere a picture can still be in flight.
+   No JS and no load listeners: the element paints the placeholder, and the
+   opaque photo simply covers it once it arrives. */
+.burst-tile,
+.filmstrip-thumb,
+.viewer-media::before {
+  background-color: var(--placeholder);
+  background-image: var(--placeholder-icon);
+  background-repeat: no-repeat;
+  background-position: center;
 }
 
-.album-card .card-caption .card-date {
-  color: var(--muted);
+.burst-tile,
+.viewer-media::before {
+  background-size: 30px;
+}
+
+.filmstrip-thumb {
+  background-size: 22px;
+}
+
+/* The stage image is stretched over the whole stage with object-fit, so a
+   background on it would tint the letterbox bars too. The placeholder goes
+   behind instead, sized to sit under the middle of the picture. */
+.viewer-media::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 96px;
+  height: 96px;
+  transform: translate(-50%, -50%);
+  border-radius: var(--radius);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.viewer-media.loading::before {
+  opacity: 1;
 }
 
 .badge {
@@ -208,6 +233,10 @@ main {
   font-size: 18px;
   border-radius: 999px;
   text-decoration: none;
+}
+
+.icon-btn[hidden] {
+  display: none;
 }
 
 .icon-btn:hover {
