@@ -1,4 +1,4 @@
-import { el, fetchJSON, formatDateShort } from "./utils.js";
+import { el, fetchJSON, formatDateShort, pluralRu } from "./utils.js";
 
 async function main() {
   const grid = document.getElementById("albums-grid");
@@ -33,7 +33,11 @@ async function main() {
         el("span", { class: "card-caption" }, [
           el("span", { class: "card-title" }, album.title),
           " — ",
-          el("span", { class: "card-date" }, `${formatDateShort(album.date)} · ${album.burstCount}`),
+          el(
+            "span",
+            { class: "card-date" },
+            `${formatDateShort(album.date)} · ${album.burstCount} ${pluralRu(album.burstCount, ["серия", "серии", "серий"])}`
+          ),
         ]),
       ]
     );

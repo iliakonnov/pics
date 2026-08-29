@@ -184,7 +184,12 @@ export function initViewer(bursts) {
     const target = findFromHash(location.hash);
     if (!target) return false;
     showAt(target.bi, target.fi);
-    pushOrReplace(false);
+    // Arriving straight at a deep link means the viewer is the first thing
+    // in this tab's history for the page. Insert a non-viewer entry below
+    // it so a single Back press closes the viewer (back to the grid)
+    // instead of leaving the page with nowhere to land.
+    history.replaceState(null, "", location.pathname + location.search);
+    pushOrReplace(true);
     return true;
   }
 
