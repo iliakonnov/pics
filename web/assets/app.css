@@ -82,22 +82,26 @@ main {
 
 /* ---- grids shared by albums list & burst grid ---- */
 
+/* Justified rows: widths and heights are written by justifyRows() in JS,
+   because CSS alone cannot fill a row edge-to-edge with mixed portrait
+   and landscape frames. */
 .albums-grid,
 .burst-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--gap);
+  align-content: flex-start;
 }
 
 .album-card,
 .burst-tile {
   position: relative;
+  flex: 0 0 auto;
   overflow: hidden;
   border-radius: var(--radius);
   background: var(--bg-elevated);
   cursor: pointer;
   display: block;
-  width: 100%;
   padding: 0;
   text-decoration: none;
   color: inherit;
@@ -122,17 +126,9 @@ main {
   user-select: none;
 }
 
-.burst-tile {
-  aspect-ratio: var(--tile-w, 3) / var(--tile-h, 2);
-}
-
 .burst-tile .preview {
   position: absolute;
   inset: 0;
-}
-
-.album-card {
-  aspect-ratio: var(--tile-w, 3) / var(--tile-h, 2);
 }
 
 .album-card .card-caption {
@@ -365,9 +361,4 @@ main {
   outline-color: #fff;
 }
 
-@media (max-width: 480px) {
-  .albums-grid,
-  .burst-grid {
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  }
-}
+

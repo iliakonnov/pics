@@ -1,4 +1,4 @@
-import { el, fetchJSON, formatDateShort, pluralRu } from "./utils.js";
+import { el, fetchJSON, formatDateShort, justifyRows, onResize, pluralRu } from "./utils.js";
 
 async function main() {
   const grid = document.getElementById("albums-grid");
@@ -18,14 +18,12 @@ async function main() {
     return;
   }
 
+  const layoutItems = [];
+
   for (const album of albums) {
     const card = el(
       "a",
-      {
-        class: "album-card",
-        href: `albums/${album.id}/`,
-        style: `--tile-w:${album.coverW || 3};--tile-h:${album.coverH || 2}`,
-      },
+      { class: "album-card", href: `albums/${album.id}/` },
       [
         album.cover
           ? el("img", { src: `/${album.cover}`, loading: "lazy", alt: album.title })
@@ -41,8 +39,13 @@ async function main() {
         ]),
       ]
     );
+    layoutItems.push({ el: card, aspect: (album.coverW || 3) / (album.coverH || 2) });
     grid.append(card);
   }
+
+  const relayout = () => justifyRows(grid, layoutItems, { targetHeight: 220 });
+  relayout();
+  onResize(relayout);
 }
 
 main();

@@ -1,16 +1,16 @@
 """Central configuration: paths, external tool names, thresholds, sizes.
 
-Values here are meant to be reasonably good defaults for a Sony ZV-1
-shooter. The Sony MakerNotes tag names in SONY_SEQUENCE_TAGS /
-SONY_DRIVE_MODE_TAGS have NOT been verified against a real ZV-1 file
-(no sample files were available while writing this). Before relying on
-sequence-based burst grouping, run:
+Tuned for a Sony ZV-1 and verified against real files from one
+(exiftool 13.55). What the camera actually writes, read with `-n`:
 
-    exiftool -G1 -a -s -Sony:all -Composite:all sample.JPG
+    mode                ReleaseMode2  SequenceNumber  SequenceLength
+    continuous burst    1             1, 2, 3, ...    0
+    single shot         8             0               1
+    (a third mode)      26            1               0
 
-against a real photo from the camera and confirm the tag names below
-still match; adjust if exiftool reports different names for your
-firmware version.
+So SequenceLength is NOT a frame count -- it is 0 during continuous
+shooting. The usable burst signal is SequenceNumber counting up from 1;
+every other mode reports 0 or repeats the same value. See grouping.py.
 """
 
 from __future__ import annotations
@@ -44,15 +44,17 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".mts", ".m2ts"}
 
 # --- burst grouping ---------------------------------------------------------
 
-# Candidate MakerNotes tag names (in priority order) exiftool may use for
-# Sony continuous-shooting sequence info. First one present on a file wins.
-SONY_SEQUENCE_NUMBER_TAGS = ("MakerNotes:SequenceImageNumber", "MakerNotes:SequenceNumber")
+# MakerNotes tag names (priority order) holding Sony's continuous-shooting
+# sequence info. First one present on a file wins. SequenceNumber is
+# preferred: it reads 0 for single shots, where SequenceImageNumber holds a
+# meaningless constant.
+SONY_SEQUENCE_NUMBER_TAGS = ("MakerNotes:SequenceNumber", "MakerNotes:SequenceImageNumber")
 SONY_SEQUENCE_LENGTH_TAGS = ("MakerNotes:SequenceLength", "MakerNotes:SequenceFileNumber")
 SONY_DRIVE_MODE_TAGS = ("MakerNotes:DriveMode", "MakerNotes:ReleaseMode2")
 
-# Fallback / sanity-check clustering: consecutive photos more than this many
-# seconds apart never belong to the same burst, regardless of what the
-# sequence tags say.
+# Used when a file carries no usable sequence tags at all. Also a sanity
+# net: photos more than 5x this far apart never share a burst even if the
+# tags claim otherwise.
 BURST_MAX_GAP_SECONDS = 1.0
 
 # --- generated asset sizes ---------------------------------------------------

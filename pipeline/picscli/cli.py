@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 
-from . import config, importer, upload
+from . import config, importer, preview, upload
 from .manifest import Manifest
 
 _DEFAULT_WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
@@ -109,6 +109,47 @@ def upload_cmd(
             click.echo(f"{aid}: {stats.uploaded} uploaded, {stats.skipped} already present")
             for f in db.files_for_album(aid):
                 db.mark_uploaded(f.hash)
+
+
+@main.command("preview")
+@click.option("--album", "album_id", default=None, help="Preview only this album id (default: all)")
+@click.option("--out", "out_dir", default=None, help="Where to assemble the site (default: <library>/_preview)")
+@click.option("--port", default=8000, show_default=True, help="Port to serve on")
+@click.option("--web", "web_root_opt", default=None, help="Path to the web/ app root (default: repo's web/ dir)")
+@click.option("--no-serve", is_flag=True, help="Just assemble the site and print the path")
+@library_option
+def preview_cmd(
+    album_id: str | None,
+    out_dir: str | None,
+    port: int,
+    web_root_opt: str | None,
+    no_serve: bool,
+    library: str | None,
+) -> None:
+    """Build the site locally and serve it — nothing is uploaded."""
+    settings = _settings(library)
+    web_root = _web_root(web_root_opt)
+
+    if album_id:
+        album_ids = [album_id]
+    else:
+        if not settings.albums_dir.is_dir():
+            raise click.ClickException("no local albums yet — run `pics import` first")
+        album_ids = sorted(p.name for p in settings.albums_dir.iterdir() if p.is_dir())
+    if not album_ids:
+        raise click.ClickException("no albums to preview")
+
+    target = Path(out_dir).expanduser() if out_dir else settings.library_root / "_preview"
+    root = preview.build_site(settings, web_root, target, album_ids)
+    click.echo(f"site assembled at {root} ({len(album_ids)} album(s))")
+
+    if no_serve:
+        return
+    click.echo(f"serving http://localhost:{port}/  (Ctrl-C to stop)")
+    try:
+        preview.serve(root, port)
+    except KeyboardInterrupt:
+        click.echo("\nstopped")
 
 
 @main.command("setup-bucket")

@@ -14,13 +14,17 @@ Two parts:
 Required on PATH: `exiftool`, `ffmpeg`, `ffprobe`, `magick`/`identify` (ImageMagick),
 `jpegtran`, `img2webp` (from `libwebp`).
 
-On this machine `ffmpeg`/`ffprobe`/`magick`/`jpegtran`/`cjpeg` were already
-installed; `exiftool` and `libwebp` (for `img2webp`) were not, and installing them
-needs sudo, which this session doesn't have non-interactively:
+On Arch/EndeavourOS:
 
 ```sh
-sudo pacman -S perl-image-exiftool libwebp
+sudo pacman -S perl-image-exiftool libwebp-tools
 ```
+
+Note that `libwebp` alone ships only the library and man pages — the
+`img2webp` binary lives in **libwebp-tools**. Arch also installs exiftool to
+`/usr/bin/vendor_perl/`, which is on the default PATH via
+`/etc/profile.d/perlbin.sh` but not in every restricted shell; set
+`PICS_EXIFTOOL=/usr/bin/vendor_perl/exiftool` if `pics` cannot find it.
 
 Run `pics import` once after installing — it checks all required tools up front
 and fails fast with a clear message if anything is missing.
@@ -78,6 +82,9 @@ pics upload --album 2026-08-29-a1b2c3
 pics upload --all
 
 pics list
+
+# Look at an album locally, without uploading anything:
+pics preview --port 8000
 ```
 
 `import` never uploads by itself — review the generated album locally first.
@@ -102,19 +109,11 @@ interrupted import instead of creating a new one.
   timestamp-gap clustering (using `SubSecTimeOriginal`) when those aren't
   present. Each video is always its own single-item burst.
 
-  ⚠️ **The exact Sony MakerNotes tag names in `picscli/config.py`
-  (`SONY_SEQUENCE_NUMBER_TAGS` etc.) were not verified against a real ZV-1
-  file** — there were no sample photos available while building this. Before
-  trusting sequence-based grouping, run:
-
-  ```sh
-  exiftool -G1 -a -s -Sony:all -Composite:all path/to/sample.JPG
-  ```
-
-  against a real burst from your card and check the tag names still match;
-  the timestamp-gap fallback (1s default, `BURST_MAX_GAP_SECONDS`) will
-  otherwise carry continuous-shooting grouping on its own, just less
-  precisely at the exact boundary between two bursts shot back-to-back.
+  Verified against real ZV-1 files (exiftool 13.55): during continuous
+  shooting `SequenceNumber` counts 1, 2, 3... while `SequenceLength` is
+  **0** — it is not a frame count. Single shots report `SequenceNumber` 0.
+  So a burst continues only on a strict +1 step, which correctly splits
+  two bursts fired 0.5s apart — something a time gap alone cannot do.
 
 - **Conversion** (`picscli/imaging.py`): originals are losslessly re-encoded
   to progressive JPEG (`jpegtran`, full EXIF kept, pixels unchanged); a

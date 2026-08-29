@@ -1,4 +1,4 @@
-import { el, isCoarsePointer } from "./utils.js";
+import { el, isCoarsePointer, justifyRows, onResize } from "./utils.js";
 
 // A press must be held this long before it counts as "peeking" rather
 // than tapping, and a tap may wander this far before it stops counting
@@ -38,6 +38,7 @@ function badgeFor(burst) {
  */
 export function renderBurstGrid(container, bursts, { onOpen }) {
   const coarse = isCoarsePointer();
+  const layoutItems = [];
 
   bursts.forEach((burst, index) => {
     const frame = burst.frames[burst.coverIndex];
@@ -45,14 +46,10 @@ export function renderBurstGrid(container, bursts, { onOpen }) {
 
     const tile = el(
       "button",
-      {
-        class: "burst-tile",
-        type: "button",
-        style: `--tile-w:${burst.thumbW};--tile-h:${burst.thumbH}`,
-        onClick: () => onOpen(index, 0),
-      },
+      { class: "burst-tile", type: "button", onClick: () => onOpen(index, 0) },
       [cover, badgeFor(burst)]
     );
+    layoutItems.push({ el: tile, aspect: (burst.thumbW || 3) / (burst.thumbH || 2) });
 
     if (burst.preview) {
       const preview = el("img", { class: "preview", alt: "" });
@@ -78,6 +75,10 @@ export function renderBurstGrid(container, bursts, { onOpen }) {
 
     container.append(tile);
   });
+
+  const relayout = () => justifyRows(container, layoutItems);
+  relayout();
+  onResize(relayout);
 
   if (!coarse) return;
 

@@ -88,8 +88,7 @@ def make_animated_webp(frame_paths: list[Path], dst: Path, *, fps: int = config.
     dst.parent.mkdir(parents=True, exist_ok=True)
     delay_ms = max(round(1000 / fps), 20)
     cmd = [config.IMG2WEBP_BIN, "-d", str(delay_ms), "-loop", "0", "-lossy", "-q", "70"]
-    for frame in frame_paths:
-        cmd.append(str(frame))
+    cmd += [str(frame) for frame in frame_paths]
     cmd += ["-o", str(dst)]
     _run(cmd)
 

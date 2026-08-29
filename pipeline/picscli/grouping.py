@@ -14,39 +14,32 @@ def _sort_key(item: MediaMeta):
     return (item.captured_at, item.file_number if item.file_number is not None else 0)
 
 
+def _starts_new_group(prev: MediaMeta, photo: MediaMeta, max_gap_seconds: float) -> bool:
+    gap = (photo.captured_at - prev.captured_at).total_seconds()
+
+    # Sanity net: nothing this far apart is one burst, whatever the tags say.
+    if gap > max_gap_seconds * 5:
+        return True
+
+    if prev.sequence_number is not None and photo.sequence_number is not None:
+        # The ZV-1 numbers continuous-shooting frames 1, 2, 3...; single
+        # shots report 0 and other modes repeat a constant. So only a
+        # strict +1 step (onto at least frame 2) continues a burst, which
+        # correctly splits two bursts fired within a second of each other
+        # — something a pure time gap cannot do.
+        return not (photo.sequence_number >= 2 and photo.sequence_number == prev.sequence_number + 1)
+
+    # No usable tags (another camera, stripped metadata): fall back to time.
+    return gap > max_gap_seconds
+
+
 def _group_photos(photos: list[MediaMeta], max_gap_seconds: float) -> list[list[MediaMeta]]:
     groups: list[list[MediaMeta]] = []
     for photo in sorted(photos, key=_sort_key):
-        if not groups:
-            groups.append([photo])
-            continue
-
-        prev = groups[-1][-1]
-        gap = (photo.captured_at - prev.captured_at).total_seconds()
-
-        has_sequence = (
-            photo.sequence_number is not None
-            and photo.sequence_length is not None
-            and photo.sequence_length > 1
-        )
-
-        if has_sequence:
-            # Sequence numbering restarting at 1 marks a new burst — checked
-            # against the current photo's own tags only, so a short burst
-            # immediately following a longer one (different sequence_length)
-            # still splits correctly. A gap much larger than expected
-            # overrides the tags, in case they were mis-parsed (tag names
-            # are unverified, see config.py).
-            sane_gap = gap <= max_gap_seconds * 5
-            starts_new_group = photo.sequence_number == 1 or not sane_gap
-        else:
-            starts_new_group = gap > max_gap_seconds
-
-        if starts_new_group:
-            groups.append([photo])
-        else:
+        if groups and not _starts_new_group(groups[-1][-1], photo, max_gap_seconds):
             groups[-1].append(photo)
-
+        else:
+            groups.append([photo])
     return groups
 
 
@@ -55,12 +48,10 @@ def group_bursts(
 ) -> list[list[MediaMeta]]:
     """Group photos into continuous-shooting bursts; each video is its own group.
 
-    Grouping prefers Sony sequence MakerNotes tags (SequenceImageNumber /
-    SequenceLength) when present and consistent between consecutive shots,
-    and falls back to clustering by the gap between capture timestamps
-    (using SubSecTimeOriginal for sub-second precision) otherwise. A large
-    gap always forces a new group even when the sequence tags disagree, as
-    a safety net against unexpected tag values.
+    Driven by Sony's SequenceNumber MakerNote (see config.py for the
+    verified values), falling back to clustering on the gap between
+    capture timestamps — which use SubSecTimeOriginal, so they resolve
+    the ~95ms between frames of a 24fps burst.
 
     Returns groups in chronological order (by each group's first item).
     """

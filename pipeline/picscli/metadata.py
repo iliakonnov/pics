@@ -1,8 +1,8 @@
 """exiftool wrapper: batch-read metadata for photos and videos.
 
 Runs exiftool once for the whole batch (much faster than one process per
-file). See config.py for a note about verifying the Sony MakerNotes tag
-names against a real camera file.
+file). See config.py for the Sony MakerNotes values this was verified
+against.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 import re
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
@@ -77,14 +77,20 @@ def _first_present(raw: dict, tags: tuple[str, ...]):
     return None
 
 
-def _parse_datetime(raw: dict, *, is_video: bool) -> datetime:
+def _parse_datetime(raw: dict, *, is_video: bool, path: Path | None = None) -> datetime:
     if is_video:
+        # Verified on real ZV-1 clips: QuickTime CreateDate really is UTC
+        # (16:54:41) while the XML sidecar records 19:54:41+03:00. Trust the
+        # sidecar when it is there, otherwise convert UTC to local time.
+        if path is not None:
+            from_sidecar = _sidecar_creation_date(path)
+            if from_sidecar is not None:
+                return from_sidecar
+
         raw_dt = raw.get("CreateDate")
         if raw_dt:
-            # Sony writes local time into the QuickTime CreateDate atom in
-            # practice, despite the QuickTime spec saying UTC. Treated as
-            # local/naive here; revisit if your files disagree.
-            return datetime.strptime(raw_dt, "%Y:%m:%d %H:%M:%S")
+            utc = datetime.strptime(raw_dt, "%Y:%m:%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            return utc.astimezone().replace(tzinfo=None)
         # Fall back to filesystem mtime, filled in by caller if this raises.
         raise ValueError("no CreateDate on video")
 
@@ -94,12 +100,53 @@ def _parse_datetime(raw: dict, *, is_video: bool) -> datetime:
     dt = datetime.strptime(raw_dt, "%Y:%m:%d %H:%M:%S")
     subsec = raw.get("SubSecTimeOriginal")
     if subsec not in (None, ""):
-        # SubSecTimeOriginal is a decimal fraction expressed as a string,
-        # e.g. "50" means .50s, "005" means .005s.
+        # A decimal fraction, not an integer: "50" is .50s, "005" is .005s.
+        # exiftool -n keeps leading-zero values as strings ("033") and only
+        # converts unambiguous ones to ints (328), so str() round-trips both.
         frac_str = str(subsec)
         microseconds = int(round(float(f"0.{frac_str}") * 1_000_000))
         dt = dt.replace(microsecond=microseconds)
     return dt
+
+
+def _parse_image_size(size) -> tuple[int | None, int | None]:
+    """Composite:ImageSize prints as '3888x2592' normally but '3888 2592'
+    under -n, which this pipeline uses. Accept either."""
+    if not isinstance(size, str):
+        return None, None
+    parts = size.replace("x", " ").split()
+    if len(parts) != 2:
+        return None, None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None, None
+
+
+def _sidecar_creation_date(path: Path) -> datetime | None:
+    """Read the true local capture time from Sony's XAVC S XML sidecar.
+
+    A clip C1234.MP4 is accompanied by C1234M01.XML holding e.g.
+    <CreationDate value="2026-08-29T19:54:41+03:00"/> — the only place the
+    camera records the UTC offset it was set to.
+    """
+    sidecar = path.with_name(f"{path.stem}M01.XML")
+    if not sidecar.is_file():
+        return None
+    try:
+        text = sidecar.read_text(errors="ignore")
+    except OSError:
+        return None
+    match = re.search(r'<CreationDate\s+value="([^"]+)"', text)
+    if not match:
+        return None
+    try:
+        parsed = datetime.fromisoformat(match.group(1))
+    except ValueError:
+        return None
+    # Everything downstream compares naive local timestamps (EXIF has no
+    # timezone), so drop the offset once it has done its job.
+    return parsed.replace(tzinfo=None)
 
 
 def _file_number(path: Path) -> int | None:
@@ -151,7 +198,7 @@ def read_media_metadata(paths: list[Path]) -> dict[Path, MediaMeta]:
             raw = {}
         is_video = path.suffix.lower() in config.VIDEO_EXTENSIONS
         try:
-            captured_at = _parse_datetime(raw, is_video=is_video)
+            captured_at = _parse_datetime(raw, is_video=is_video, path=path)
         except ValueError:
             captured_at = datetime.fromtimestamp(path.stat().st_mtime)
 
@@ -159,11 +206,7 @@ def read_media_metadata(paths: list[Path]) -> dict[Path, MediaMeta]:
             width = raw.get("ImageWidth")
             height = raw.get("ImageHeight")
         else:
-            size = raw.get("ImageSize")  # "WxH" from Composite:ImageSize with -n
-            width = height = None
-            if isinstance(size, str) and "x" in size:
-                w, h = size.split("x", 1)
-                width, height = int(w), int(h)
+            width, height = _parse_image_size(raw.get("ImageSize"))
 
         out[path] = MediaMeta(
             path=path,

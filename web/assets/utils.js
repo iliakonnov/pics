@@ -62,3 +62,58 @@ export function el(tag, attrs = {}, children = []) {
 
 export const isCoarsePointer = () =>
   window.matchMedia && window.matchMedia("(hover: none), (pointer: coarse)").matches;
+
+/**
+ * Lay tiles out in justified rows, the way photo galleries do: every row
+ * is filled edge to edge and each tile keeps its own aspect ratio.
+ *
+ * A plain CSS grid can't do this — with mixed portrait and landscape
+ * shots, one tall frame stretches its whole row and the landscape tiles
+ * beside it leave a band of empty space.
+ *
+ * `items` is [{ el, aspect }]; sizes are written straight onto the
+ * elements, so call it again after a resize.
+ */
+export function justifyRows(container, items, { gap = 6, targetHeight } = {}) {
+  const width = container.clientWidth;
+  if (!width || !items.length) return;
+  const target = targetHeight || (width < 500 ? 130 : 200);
+
+  let row = [];
+  let rowAspect = 0;
+
+  const flush = (isLastRow) => {
+    if (!row.length) return;
+    const available = width - gap * (row.length - 1);
+    // A last row with only a couple of frames would balloon if stretched,
+    // so leave it at the target height instead.
+    let height = available / rowAspect;
+    if (isLastRow && height > target * 1.3) height = target;
+
+    let used = 0;
+    row.forEach((item, i) => {
+      const last = i === row.length - 1;
+      const w = !isLastRow && last ? available - used : Math.floor(item.aspect * height);
+      used += w;
+      item.el.style.width = `${w}px`;
+      item.el.style.height = `${Math.round(height)}px`;
+    });
+    row = [];
+    rowAspect = 0;
+  };
+
+  for (const item of items) {
+    row.push(item);
+    rowAspect += item.aspect;
+    if (rowAspect * target + gap * (row.length - 1) >= width) flush(false);
+  }
+  flush(true);
+}
+
+export function onResize(handler) {
+  let pending = null;
+  window.addEventListener("resize", () => {
+    if (pending) cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(handler);
+  });
+}
