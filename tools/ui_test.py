@@ -154,6 +154,24 @@ def desktop_tests(browser):
     page.click(".burst-tile")
     page.wait_for_selector("#viewer:not([hidden])")
     check("filmstrip shown for multi-frame burst", page.eval_on_selector("#filmstrip", "el => !el.hidden"))
+
+    # The photo must be letterboxed inside the stage, never cropped by it:
+    # .viewer-media needs a definite height or max-height:100% on the image
+    # resolves to nothing and overflow:hidden eats the top and bottom.
+    fit = page.evaluate(
+        """() => {
+            const img = document.querySelector('#viewer-media img');
+            const st = document.getElementById('viewer-stage').getBoundingClientRect();
+            const r = img.getBoundingClientRect();
+            return {
+                fits: r.height <= st.height + 1 && r.width <= st.width + 1,
+                shown: r.width / r.height,
+                natural: img.naturalWidth / img.naturalHeight,
+            };
+        }"""
+    )
+    check("photo fits the stage uncropped", fit["fits"], str(fit))
+    check("photo keeps its aspect ratio", abs(fit["shown"] - fit["natural"]) < 0.01, str(fit))
     check("filmstrip has 6 thumbs", len(page.query_selector_all(".filmstrip-thumb")) == 6)
     shot(page, "04-viewer-frame0")
 

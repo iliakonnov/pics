@@ -241,9 +241,12 @@ main {
   touch-action: none;
 }
 
+/* Must be a definite box: with height:auto the image's `max-height: 100%`
+   has nothing to resolve against, so only its width gets constrained and
+   the stage's overflow:hidden crops the top and bottom off. */
 .viewer-media {
-  max-width: 100%;
-  max-height: 100%;
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
