@@ -21,7 +21,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 WEB = REPO / "web"
 
-BURST_FRAMES = 6  # long enough that a fast shuttle wraps around
+BURST_FRAMES = 16  # longer than the viewer's preload window, so laziness is testable
 
 
 def run(cmd: list[str]) -> None:

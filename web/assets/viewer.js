@@ -106,25 +106,37 @@ export function initViewer(bursts) {
     return frame.thumb;
   }
 
-  /** Pull the whole burst down at medium size so shuttling stays sharp. */
+  /**
+   * Fetch the burst at medium size so shuttling stays sharp.
+   *
+   * Opening a burst only pulls a window around the frame on screen —
+   * fetching a long burst in full would be a large download for someone
+   * who just wanted to look at one photo. The rest is fetched when the
+   * finger actually lands on the filmstrip; anything not yet in falls
+   * back to its thumbnail for a moment.
+   */
+  const PRELOAD_WINDOW = 6;
   let preloadedBurst = -1;
+  let preloadedWholeBurst = false;
 
-  function preloadBurstForShuttle(bi) {
-    if (preloadedBurst === bi) return;
+  function preloadBurstForShuttle(bi, { whole = false } = {}) {
     const frames = bursts[bi].frames;
     if (frames.length < 2) return;
+    if (preloadedBurst === bi && (preloadedWholeBurst || !whole)) return;
+    if (preloadedBurst !== bi) held.clear();
     preloadedBurst = bi;
-    held.clear();
-    // Start at the frame being viewed and fan outwards, so the frames
-    // reached first are the ones ready first.
-    const order = [];
-    for (let d = 0; d < frames.length; d++) {
-      const a = frameIndex + d;
-      const b = frameIndex - d;
-      if (a < frames.length) order.push(frames[a]);
-      if (d && b >= 0) order.push(frames[b]);
+    preloadedWholeBurst = whole;
+
+    // Fan out from the frame being viewed, so what the user reaches first
+    // is what arrives first.
+    const reach = whole ? frames.length : PRELOAD_WINDOW;
+    for (let d = 0; d <= reach; d++) {
+      for (const i of d ? [frameIndex + d, frameIndex - d] : [frameIndex]) {
+        if (i >= 0 && i < frames.length) {
+          preload(frames[i].medium || frames[i].display, { hold: true });
+        }
+      }
     }
-    for (const frame of order) preload(frame.medium || frame.display, { hold: true });
   }
 
   // -- rendering ------------------------------------------------------
@@ -440,6 +452,7 @@ export function initViewer(bursts) {
 
   function startShuttle(x) {
     hideShuttleHint({ spend: true });
+    preloadBurstForShuttle(burstIndex, { whole: true });
     shuttleActive = true;
     shuttleStartX = x;
     shuttleDx = 0;

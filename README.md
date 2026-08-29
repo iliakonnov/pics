@@ -213,6 +213,14 @@ medium copy, preloaded for the whole burst when it opened, so scrubbing
 stays sharp; frames that have not arrived yet fall back to the thumbnail,
 and the full display image is restored the moment the finger lifts.
 
+Grid covers and filmstrip thumbnails carry `loading="lazy"`, so a long
+album fetches what is on screen rather than everything: of 374 tiles, 67
+load up front and the rest arrive while scrolling. Opening a burst pulls
+only a window of medium-size frames around the one on screen — the rest is
+fetched when a finger lands on the filmstrip, since that is the moment
+scrubbing is about to start. An 18-frame burst costs 7 frames on open
+instead of 18.
+
 The stage scales every frame to fit — both up and down. That matters
 because a shuttle shows the 480px thumbnail, which is smaller than a phone
 screen: sized with `max-width/max-height` alone it would sit at its

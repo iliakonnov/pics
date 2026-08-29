@@ -535,6 +535,51 @@ def portrait_fit_test(browser):
     page.close()
 
 
+def lazy_loading_test(browser):
+    print("loading: pictures are fetched when needed, not all at once")
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+    watch(page, "lazy")
+    medium = []
+    page.on("request", lambda r: "/medium/" in r.url and medium.append(r.url))
+
+    page.goto(ALBUM)
+    page.wait_for_selector(".burst-tile")
+    check(
+        "every grid cover is marked lazy",
+        page.evaluate("""() => [...document.querySelectorAll('.burst-tile img.cover')]
+             .every(i => i.getAttribute('loading') === 'lazy')"""),
+    )
+
+    page.click(".burst-tile")
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(1500)
+    check(
+        "every filmstrip thumb is marked lazy",
+        page.evaluate("""() => [...document.querySelectorAll('.filmstrip-thumb img')]
+             .every(i => i.getAttribute('loading') === 'lazy')"""),
+    )
+
+    frames = page.evaluate("() => document.querySelectorAll('.filmstrip-thumb').length")
+    on_open = len(medium)
+    check(
+        "opening a burst fetches a window, not the whole burst",
+        0 < on_open < frames,
+        f"{on_open} of {frames} frames",
+    )
+
+    # Touching the strip means the user is about to scrub: fetch the rest.
+    strip_y = page.eval_on_selector("#filmstrip", "el => el.getBoundingClientRect().top + 30")
+    touch(page, "#filmstrip", "touchstart", 200, strip_y)
+    page.wait_for_timeout(2000)
+    touch(page, "#filmstrip", "touchend", 200, strip_y)
+    check(
+        "touching the strip pulls in the rest of the burst",
+        len(medium) >= frames,
+        f"{len(medium)} of {frames} after touch (was {on_open})",
+    )
+    page.close()
+
+
 def placeholder_test(browser):
     print("placeholders: every unloaded picture still shows it has a slot")
     # No watch(): the aborted requests below are the point of the test, and
@@ -637,6 +682,7 @@ with sync_playwright() as p:
     shuttle_hint_test(browser)
     portrait_fit_test(browser)
     placeholder_test(browser)
+    lazy_loading_test(browser)
     video_swipe_test(browser)
     browser.close()
 
