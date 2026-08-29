@@ -1,7 +1,9 @@
-"""Assemble the site locally and serve it, without touching S3.
+"""Assemble one album locally and serve it, without touching S3.
 
-Media directories are symlinked rather than copied, so previewing an
-album full of 20MB originals costs nothing on disk.
+Mirrors exactly what `pics upload` publishes: the album directory is the
+whole site, served at the root, so what you review locally is what your
+friends will see. Media directories are symlinked rather than copied, so
+previewing an album full of 20MB originals costs nothing on disk.
 """
 
 from __future__ import annotations
@@ -15,39 +17,29 @@ from pathlib import Path
 from . import config
 
 
-def build_site(settings: config.Settings, web_root: Path, out_dir: Path, album_ids: list[str]) -> Path:
+def build_site(settings: config.Settings, web_root: Path, out_dir: Path, album_id: str) -> Path:
+    src = settings.album_dir(album_id)
+    if not src.is_dir():
+        raise RuntimeError(f"no local album directory for {album_id}: {src}")
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     assets_dst = out_dir / "assets"
     if assets_dst.exists():
         shutil.rmtree(assets_dst)
     shutil.copytree(web_root / "assets", assets_dst)
-    shutil.copy(web_root / "index.html", out_dir / "index.html")
+    shutil.copy(web_root / "album.html", out_dir / "index.html")
+    shutil.copy(src / "album.json", out_dir / "album.json")
 
-    if settings.albums_index_path.is_file():
-        shutil.copy(settings.albums_index_path, out_dir / "albums.json")
-
-    albums_dst = out_dir / "albums"
-    albums_dst.mkdir(exist_ok=True)
-
-    for album_id in album_ids:
-        src = settings.album_dir(album_id)
-        if not src.is_dir():
+    for child in src.iterdir():
+        if not child.is_dir():
             continue
-        dst = albums_dst / album_id
-        dst.mkdir(exist_ok=True)
-        shutil.copy(web_root / "album.html", dst / "index.html")
-        shutil.copy(src / "album.json", dst / "album.json")
-        for child in src.iterdir():
-            if not child.is_dir():
-                continue
-            link = dst / child.name
-            if link.is_symlink() or link.exists():
-                if link.is_symlink():
-                    link.unlink()
-                else:
-                    continue
-            link.symlink_to(child)
+        link = out_dir / child.name
+        if link.is_symlink():
+            link.unlink()
+        elif link.exists():
+            continue
+        link.symlink_to(child)
 
     return out_dir
 

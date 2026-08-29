@@ -59,8 +59,31 @@ def make_resized_jpeg(src: Path, dst: Path, *, max_dim: int, quality: int) -> tu
     return image_dimensions(dst)
 
 
+def make_resized_webp(src: Path, dst: Path, *, max_dim: int, quality: int) -> tuple[int, int]:
+    """Auto-orient, downscale (never upscale) and strip metadata. Returns final (w, h)."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            config.MAGICK_BIN,
+            str(src),
+            "-auto-orient",
+            "-resize",
+            f"{max_dim}x{max_dim}>",
+            "-quality",
+            str(quality),
+            "-strip",
+            str(dst),
+        ]
+    )
+    return image_dimensions(dst)
+
+
 def make_thumb(src: Path, dst: Path) -> tuple[int, int]:
-    return make_resized_jpeg(src, dst, max_dim=config.THUMB_MAX_DIM, quality=config.THUMB_QUALITY)
+    return make_resized_webp(src, dst, max_dim=config.THUMB_MAX_DIM, quality=config.THUMB_QUALITY)
+
+
+def make_medium(src: Path, dst: Path) -> tuple[int, int]:
+    return make_resized_webp(src, dst, max_dim=config.MEDIUM_MAX_DIM, quality=config.MEDIUM_QUALITY)
 
 
 def make_display_jpeg(src: Path, dst: Path) -> tuple[int, int]:

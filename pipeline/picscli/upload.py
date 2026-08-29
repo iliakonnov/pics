@@ -1,11 +1,17 @@
-"""Sync the local library to Yandex Object Storage (S3-compatible).
+"""Publish one album to Yandex Object Storage (S3-compatible).
 
-Content-hash-named media (originals/thumb/display/preview/video) is
-uploaded with a long immutable Cache-Control and skipped if the key
-already exists remotely — identical hash means identical bytes. HTML/JSON
-manifests and the shared JS/CSS bundle are mutable and always re-uploaded
-with a no-cache header so a re-run of `pics import` (or an edit to the web
-app) shows up immediately.
+Each album is uploaded to its own directory, named with the album's
+unguessable id, and is entirely self-contained: its own index.html, its
+own copy of the JS/CSS, its album.json and its media. The directory URL
+is the share link, and nothing outside it is needed to view it — so the
+album can be forgotten locally afterwards, and no index ties albums
+together.
+
+Content-hash-named media is uploaded with a long immutable Cache-Control
+and skipped when the key already exists (identical hash means identical
+bytes). The HTML, JSON and JS/CSS are mutable and always re-uploaded with
+a no-cache header, so re-running an import or editing the web app shows
+up immediately.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from botocore.exceptions import ClientError
 
 from . import config
 
-_IMMUTABLE_DIRS = {"originals", "thumb", "display", "preview", "video"}
+_IMMUTABLE_DIRS = {"originals", "thumb", "medium", "display", "preview", "video"}
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -90,67 +96,43 @@ def _put_file(client, bucket: str, key: str, path: Path, *, immutable: bool) -> 
 
 
 def sync_album(client, settings: config.Settings, album_id: str, web_root: Path, *, force: bool = False) -> SyncStats:
+    """Upload everything the album needs under the key prefix `album_id/`."""
     stats = SyncStats()
     bucket = settings.s3_bucket
     album_dir = settings.album_dir(album_id)
     if not album_dir.is_dir():
         raise RuntimeError(f"no local album directory for {album_id}: {album_dir}")
 
-    # album.html shell, duplicated per album so relative fetch('./album.json') just works.
-    album_shell = web_root / "album.html"
-    if album_shell.is_file():
-        key = f"albums/{album_id}/index.html"
-        _put_file(client, bucket, key, album_shell, immutable=False)
+    def put(key: str, path: Path, *, immutable: bool) -> None:
+        _put_file(client, bucket, key, path, immutable=immutable)
         stats.uploaded += 1
         stats.keys_uploaded.append(key)
+
+    # The page itself, plus its own copy of the app: no shared root.
+    put(f"{album_id}/index.html", web_root / "album.html", immutable=False)
+    for asset in sorted((web_root / "assets").iterdir()):
+        if asset.is_file():
+            put(f"{album_id}/assets/{asset.name}", asset, immutable=False)
 
     for path in sorted(album_dir.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(album_dir)
-        top = rel.parts[0]
-        key = f"albums/{album_id}/{rel.as_posix()}"
+        key = f"{album_id}/{rel.as_posix()}"
 
-        if top in _IMMUTABLE_DIRS:
+        if rel.parts[0] in _IMMUTABLE_DIRS:
             if not force and object_exists(client, bucket, key):
                 stats.skipped += 1
                 continue
-            _put_file(client, bucket, key, path, immutable=True)
+            put(key, path, immutable=True)
         else:
-            # album.json and anything else at the album root: always refresh
-            _put_file(client, bucket, key, path, immutable=False)
-        stats.uploaded += 1
-        stats.keys_uploaded.append(key)
+            put(key, path, immutable=False)  # album.json
 
     return stats
 
 
-def sync_site_assets(client, settings: config.Settings, web_root: Path) -> SyncStats:
-    stats = SyncStats()
-    bucket = settings.s3_bucket
-
-    index_html = web_root / "index.html"
-    if index_html.is_file():
-        _put_file(client, bucket, "index.html", index_html, immutable=False)
-        stats.uploaded += 1
-        stats.keys_uploaded.append("index.html")
-
-    assets_dir = web_root / "assets"
-    if assets_dir.is_dir():
-        for path in sorted(assets_dir.rglob("*")):
-            if not path.is_file():
-                continue
-            key = f"assets/{path.relative_to(assets_dir).as_posix()}"
-            _put_file(client, bucket, key, path, immutable=False)
-            stats.uploaded += 1
-            stats.keys_uploaded.append(key)
-
-    if settings.albums_index_path.is_file():
-        _put_file(client, bucket, "albums.json", settings.albums_index_path, immutable=False)
-        stats.uploaded += 1
-        stats.keys_uploaded.append("albums.json")
-
-    return stats
+def album_url(settings: config.Settings, album_id: str) -> str:
+    return f"http://{settings.s3_bucket}.website.yandexcloud.net/{album_id}/"
 
 
 BUCKET_POLICY_TEMPLATE = {

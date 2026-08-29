@@ -9,9 +9,12 @@ the pure pieces it calls into.
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import shutil
 import tempfile
-import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -23,19 +26,59 @@ from .mediameta import MediaMeta
 Logger = object  # any callable(str) -> None
 
 
+def default_jobs() -> int:
+    """One worker per core. The work is almost entirely spent inside
+    jpegtran/magick/ffmpeg subprocesses, so threads are enough — they
+    release the GIL while waiting and never touch shared state."""
+    return os.cpu_count() or 4
+
+
+def _run_parallel(tasks, worker, jobs, *, label, log):
+    """Run worker(task) over tasks, reporting progress as results land.
+
+    Returns {index: result}. Exceptions propagate once every worker has
+    been given the chance to finish, so a failure can't leave orphaned
+    subprocesses mid-import.
+    """
+    results = {}
+    if not tasks:
+        return results
+    done = 0
+    lock = threading.Lock()
+    total = len(tasks)
+    step = max(1, total // 20)
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {pool.submit(worker, task): i for i, task in enumerate(tasks)}
+        for future in as_completed(futures):
+            i = futures[future]
+            results[i] = future.result()
+            with lock:
+                done += 1
+                if done == total or done % step == 0:
+                    log(f"  {label}: {done}/{total}")
+    return results
+
+
 def _default_log(msg: str) -> None:
     print(msg)
 
 
-def make_album_id(first_item: MediaMeta) -> str:
-    date = first_item.captured_at.date().isoformat()
-    return f"{date}-{uuid.uuid4().hex[:6]}"
+def make_album_id(_first_item: MediaMeta | None = None) -> str:
+    """An unguessable directory name.
+
+    The album id *is* the secret: it becomes the published directory and
+    the link handed to friends, so it must not encode the date or anything
+    else about the contents. ~96 bits of randomness.
+    """
+    return secrets.token_urlsafe(12)
 
 
 def _process_photo_frame(item: MediaMeta, album_dir: Path) -> album_mod.Frame:
     original_rel = f"originals/{item.file_hash}.jpg"
-    thumb_rel = f"thumb/{item.file_hash}.jpg"
+    thumb_rel = f"thumb/{item.file_hash}.webp"
     display_rel = f"display/{item.file_hash}.jpg"
+    medium_rel = f"medium/{item.file_hash}.webp"
 
     original_path = album_dir / original_rel
     if not original_path.exists():
@@ -50,12 +93,17 @@ def _process_photo_frame(item: MediaMeta, album_dir: Path) -> album_mod.Frame:
     if not display_path.exists():
         imaging.make_display_jpeg(item.path, display_path)
 
+    medium_path = album_dir / medium_rel
+    if not medium_path.exists():
+        imaging.make_medium(item.path, medium_path)
+
     return album_mod.Frame(
         hash=item.file_hash,
         kind="photo",
         thumb=thumb_rel,
         original=original_rel,
         display=display_rel,
+        medium=medium_rel,
         video=None,
         width=item.width,
         height=item.height,
@@ -66,7 +114,7 @@ def _process_photo_frame(item: MediaMeta, album_dir: Path) -> album_mod.Frame:
 
 def _process_video_frame(item: MediaMeta, album_dir: Path) -> tuple[album_mod.Frame, tuple[int, int]]:
     original_rel = f"originals/{item.file_hash}{item.ext}"
-    thumb_rel = f"thumb/{item.file_hash}.jpg"
+    thumb_rel = f"thumb/{item.file_hash}.webp"
     video_rel = f"video/{item.file_hash}.mp4"
 
     original_path = album_dir / original_rel
@@ -96,6 +144,7 @@ def _process_video_frame(item: MediaMeta, album_dir: Path) -> tuple[album_mod.Fr
         thumb=thumb_rel,
         original=original_rel,
         display=None,
+        medium=None,
         video=video_rel,
         width=width,
         height=height,
@@ -139,8 +188,10 @@ def run_import(
     *,
     title: str | None = None,
     album_id: str | None = None,
+    jobs: int | None = None,
     log: Logger = _default_log,
 ) -> str:
+    jobs = jobs or default_jobs()
     tool_errors = metadata.check_tools_available()
     if tool_errors:
         raise RuntimeError("missing required tools:\n" + "\n".join(f"  - {e}" for e in tool_errors))
@@ -152,31 +203,34 @@ def run_import(
 
     log("reading metadata (exiftool)...")
     meta_by_path = metadata.read_media_metadata(files)
+
+    log(f"hashing {len(files)} file(s)...")
+    hashes = _run_parallel(files, scan.hash_file, jobs, label="hashed", log=log)
     items: list[MediaMeta] = []
-    for path in files:
+    for i, path in enumerate(files):
         item = meta_by_path[path]
-        item.file_hash = scan.hash_file(path)
+        item.file_hash = hashes[i]
         items.append(item)
 
     with Manifest(settings.state_db_path) as db:
-        resolved_album_id = album_id or make_album_id(sorted(items, key=lambda i: i.captured_at)[0])
+        resolved_album_id = album_id or make_album_id()
         date = min(i.captured_at for i in items).date().isoformat()
         resolved_title = title or date
         db.ensure_album(resolved_album_id, resolved_title, date)
         log(f"album: {resolved_album_id}")
 
-        # Drop files already archived under a *different* album (dedup across
-        # imports). Files already in *this* album (a resumed run) are kept.
+        # Deduplicate only within this import (the same shot copied twice
+        # onto the card). Albums are independent and get deleted locally
+        # once published, so the same photos may legitimately be imported
+        # again later into a new album.
         kept_items = []
+        seen_hashes = set()
         for item in items:
-            existing = db.find_by_hash(item.file_hash)
-            if existing and existing.album_id != resolved_album_id:
-                log(f"  skip (already in album {existing.album_id}): {item.path.name}")
+            if item.file_hash in seen_hashes:
+                log(f"  skip (duplicate of another file in this import): {item.path.name}")
                 continue
+            seen_hashes.add(item.file_hash)
             kept_items.append(item)
-
-        if not kept_items:
-            raise RuntimeError("every file in this batch was already imported into a different album")
 
         groups = grouping.group_bursts(kept_items)
         log(f"grouped into {len(groups)} burst(s)")
@@ -184,46 +238,69 @@ def run_import(
         album_dir = settings.album_dir(resolved_album_id)
         bursts: list[album_mod.Burst] = []
 
+        # Convert every frame first, across all bursts at once: the work is
+        # per-file and independent, so one flat pool keeps every core busy
+        # instead of stalling on bursts that happen to be short.
+        flat = [(gi, fi, item) for gi, group in enumerate(groups) for fi, item in enumerate(group)]
+
+        def convert(task):
+            _, _, item = task
+            if item.kind == "photo":
+                return _process_photo_frame(item, album_dir)
+            return _process_video_frame(item, album_dir)
+
+        log(f"converting {len(flat)} file(s) on {jobs} worker(s)...")
+        converted = _run_parallel(flat, convert, jobs, label="converted", log=log)
+
+        frames_by_group: dict[int, dict[int, album_mod.Frame]] = {}
+        dims_by_group: dict[int, tuple[int, int]] = {}
+        for i, (gi, fi, item) in enumerate(flat):
+            frame, dims = converted[i]
+            frames_by_group.setdefault(gi, {})[fi] = frame
+            if fi == 0:
+                dims_by_group[gi] = dims
+
+            db.register_file(
+                file_hash=item.file_hash,
+                kind=item.kind,
+                source_path=str(item.path),
+                album_id=resolved_album_id,
+                burst_id=f"b{gi:04d}",
+                frame_index=fi,
+                captured_at=item.captured_at.isoformat(),
+            )
+            db.mark_processed(item.file_hash)
+
+        # Previews depend on the thumbnails above, so they form a second wave.
+        preview_tasks = [
+            (gi, group, [frames_by_group[gi][fi] for fi in sorted(frames_by_group[gi])])
+            for gi, group in enumerate(groups)
+            if len(group) > 1 or group[0].kind == "video"
+        ]
+        log(f"building {len(preview_tasks)} animated preview(s)...")
+        previews = _run_parallel(
+            preview_tasks,
+            lambda t: _build_preview(t[1], t[2], album_dir, f"b{t[0]:04d}"),
+            jobs,
+            label="previews",
+            log=log,
+        )
+        preview_by_group = {preview_tasks[i][0]: rel for i, rel in previews.items()}
+
         for gi, group in enumerate(groups):
-            burst_id = f"b{gi:04d}"
-            frames: list[album_mod.Frame] = []
-            cover_dims: tuple[int, int] | None = None
-
-            for fi, item in enumerate(group):
-                if item.kind == "photo":
-                    frame, dims = _process_photo_frame(item, album_dir)
-                else:
-                    frame, dims = _process_video_frame(item, album_dir)
-                frames.append(frame)
-                if fi == 0:
-                    cover_dims = dims
-
-                db.register_file(
-                    file_hash=item.file_hash,
-                    kind=item.kind,
-                    source_path=str(item.path),
-                    album_id=resolved_album_id,
-                    burst_id=burst_id,
-                    frame_index=fi,
-                    captured_at=item.captured_at.isoformat(),
-                )
-                db.mark_processed(item.file_hash)
-
-            preview = _build_preview(group, frames, album_dir, burst_id)
-
+            ordered = [frames_by_group[gi][fi] for fi in sorted(frames_by_group[gi])]
             bursts.append(
                 album_mod.Burst(
-                    id=burst_id,
+                    id=f"b{gi:04d}",
                     kind=group[0].kind,
                     captured_at=group[0].captured_at,
-                    thumb_w=cover_dims[0],
-                    thumb_h=cover_dims[1],
-                    frames=frames,
-                    preview=preview,
+                    thumb_w=dims_by_group[gi][0],
+                    thumb_h=dims_by_group[gi][1],
+                    frames=ordered,
+                    preview=preview_by_group.get(gi),
                     cover_index=0,
                 )
             )
-            log(f"  [{gi + 1}/{len(groups)}] {burst_id}: {group[0].kind}, {len(group)} frame(s)")
 
         album_json = album_mod.build_album_json(
             album_id=resolved_album_id,
@@ -233,12 +310,6 @@ def run_import(
             generated_at=datetime.now(),
         )
         (album_dir / "album.json").write_text(json.dumps(album_json, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        index_path = settings.albums_index_path
-        existing_index = json.loads(index_path.read_text()) if index_path.exists() else None
-        new_index = album_mod.upsert_albums_index(existing_index, album_mod.album_summary(album_json))
-        index_path.write_text(json.dumps(new_index, indent=2, ensure_ascii=False), encoding="utf-8")
-
         db.commit()
 
     log(f"done: {resolved_album_id} ({len(bursts)} burst(s))")

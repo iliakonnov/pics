@@ -59,8 +59,19 @@ BURST_MAX_GAP_SECONDS = 1.0
 
 # --- generated asset sizes ---------------------------------------------------
 
+# Thumbnails and the medium copy are WebP: measured against these very
+# photos it is ~25-35% smaller than JPEG at matching distortion. The
+# display copy stays JPEG, and the download is always the untouched
+# progressive-JPEG original.
 THUMB_MAX_DIM = 480
 THUMB_QUALITY = 80
+
+# Shown while shuttling through a burst. Sized to cover a phone screen at
+# 3x DPR (~1170px) without the memory cost of the display tier: a decoded
+# 2560px frame is ~17MB, so a 24-frame burst would be ~420MB resident,
+# where 1280px frames come to ~105MB.
+MEDIUM_MAX_DIM = 1280
+MEDIUM_QUALITY = 82
 
 DISPLAY_MAX_DIM = 2560
 DISPLAY_QUALITY = 85
@@ -93,10 +104,6 @@ class Settings:
     @property
     def albums_dir(self) -> Path:
         return self.library_root / "albums"
-
-    @property
-    def albums_index_path(self) -> Path:
-        return self.library_root / "albums.json"
 
     def album_dir(self, album_id: str) -> Path:
         return self.albums_dir / album_id

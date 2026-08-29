@@ -1,7 +1,8 @@
-"""Pure builders for album.json and the root albums.json index.
+"""Pure builder for an album's album.json.
 
-Deliberately free of file I/O so it can be unit tested with synthetic
-Frame/Burst objects — no real photos required.
+Albums are standalone: each one is published to its own directory and
+shared by link, so there is no cross-album index. Deliberately free of
+file I/O so it can be unit tested with synthetic Frame/Burst objects.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ class Frame:
     thumb: str  # path relative to the album dir, e.g. "thumb/<hash>.jpg"
     original: str
     display: str | None  # photo only
+    medium: str | None  # photo only: mid-size copy used while shuttling
     video: str | None  # video only (transcoded mp4, relative path)
     width: int | None  # native/unrotated pixel width
     height: int | None
@@ -56,6 +58,7 @@ def build_album_json(*, album_id: str, title: str, date: str, bursts: list[Burst
                     {
                         "hash": f.hash,
                         "thumb": f.thumb,
+                        "medium": f.medium,
                         "display": f.display,
                         "original": f.original,
                         "video": f.video,
@@ -70,29 +73,3 @@ def build_album_json(*, album_id: str, title: str, date: str, bursts: list[Burst
             for b in bursts
         ],
     }
-
-
-def album_summary(album_json: dict) -> dict:
-    """A compact entry for the root albums.json index."""
-    bursts = album_json["bursts"]
-    cover_burst = bursts[0] if bursts else None
-    cover_frame = cover_burst["frames"][cover_burst["coverIndex"]] if cover_burst else None
-    frame_count = sum(b["count"] for b in bursts)
-    return {
-        "id": album_json["id"],
-        "title": album_json["title"],
-        "date": album_json["date"],
-        "cover": f"albums/{album_json['id']}/{cover_frame['thumb']}" if cover_frame else None,
-        "coverW": cover_burst["thumbW"] if cover_burst else None,
-        "coverH": cover_burst["thumbH"] if cover_burst else None,
-        "burstCount": len(bursts),
-        "frameCount": frame_count,
-    }
-
-
-def upsert_albums_index(index: dict | None, summary: dict) -> dict:
-    """Return a new index dict with `summary` inserted/replacing its album id, sorted by date."""
-    albums = [a for a in (index or {}).get("albums", []) if a["id"] != summary["id"]]
-    albums.append(summary)
-    albums.sort(key=lambda a: (a["date"], a["id"]))
-    return {"albums": albums}

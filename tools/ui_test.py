@@ -26,7 +26,8 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("PICS_TEST_URL", "http://localhost:8791")
-ALBUM = f"{BASE}/albums/2026-08-29-demo01/"
+# An album is served standalone at the root of its own directory.
+ALBUM = BASE + "/"
 CHROMIUM = os.environ.get("PICS_CHROMIUM", "/usr/bin/chromium")
 OUT = Path(os.environ.get("PICS_TEST_SHOTS", "/tmp/pics-screens"))
 
@@ -150,15 +151,17 @@ def desktop_tests(browser):
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     watch(page, "desktop")
 
-    page.goto(f"{BASE}/")
-    page.wait_for_selector(".album-card")
-    caption = page.eval_on_selector(".card-date", "el => el.textContent")
-    check("album caption pluralised", "серии" in caption or "серий" in caption or "серия" in caption, repr(caption))
-    shot(page, "01-albums-list")
-
-    page.click(".album-card")
+    page.goto(ALBUM)
     page.wait_for_selector(".burst-tile")
     check("five burst tiles", len(page.query_selector_all(".burst-tile")) == 5)
+    check(
+        "page references only relative assets (self-contained directory)",
+        page.evaluate(
+            """() => [...document.querySelectorAll('link[href],script[src]')]
+                 .every(e => !(e.getAttribute('href') || e.getAttribute('src') || '').startsWith('/'))"""
+        ),
+    )
+    check("no shuttle hint on desktop", page.eval_on_selector("#strip-hint", "el => !el.classList.contains('visible')"))
     shot(page, "02-album-grid")
 
     page.query_selector_all(".burst-tile")[0].hover()
@@ -247,10 +250,7 @@ def shuttle_tests(browser):
     page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
     watch(page, "shuttle")
 
-    page.goto(f"{BASE}/")
-    page.wait_for_selector(".album-card")
-    shot(page, "10-mobile-albums")
-    page.click(".album-card")
+    page.goto(ALBUM)
     page.wait_for_selector(".burst-tile")
     page.wait_for_timeout(300)
 
@@ -307,7 +307,7 @@ def shuttle_tests(browser):
     later = active_frame(page)
     check("holding right keeps advancing", during != later or during > 0, f"{during} -> {later}")
     check("URL not rewritten mid-shuttle", hash_during == "#b0000:0", hash_during)
-    check("scrubs with low-res thumb", "thumb/" in src_during, src_during)
+    check("scrubs at medium quality, not thumbnail", "medium/" in src_during, src_during)
 
     touch(page, "#filmstrip", "touchend", 340, strip_y)
     page.wait_for_timeout(120)
@@ -451,6 +451,63 @@ def zoom_tests(browser):
     page.close()
 
 
+def shuttle_hint_test(browser):
+    print("mobile: the swipe hint advertises the shuttle, then gets out of the way")
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+    watch(page, "hint")
+    open_burst_a(page, mobile=True)
+
+    check("hint shown on a multi-frame burst", page.eval_on_selector("#strip-hint", "el => el.classList.contains('visible')"))
+    check(
+        "hint cannot swallow the gesture it advertises",
+        page.eval_on_selector("#strip-hint", "el => getComputedStyle(el).pointerEvents === 'none'"),
+    )
+    check(
+        "hint sits in the margins, not over the middle of the strip",
+        page.evaluate(
+            """() => {
+                const strip = document.getElementById('filmstrip').getBoundingClientRect();
+                const mid = strip.left + strip.width / 2;
+                return [...document.querySelectorAll('.strip-hint-side')].every(s => {
+                    const r = s.getBoundingClientRect();
+                    return r.right < mid || r.left > mid;
+                });
+            }"""
+        ),
+    )
+    shot(page, "22-mobile-shuttle-hint")
+
+    # Using the gesture retires the hint for good.
+    strip_y = page.eval_on_selector("#filmstrip", "el => el.getBoundingClientRect().top + 30")
+    touch(page, "#filmstrip", "touchstart", 200, strip_y)
+    touch(page, "#filmstrip", "touchmove", 300, strip_y)
+    page.wait_for_timeout(200)
+    touch(page, "#filmstrip", "touchend", 300, strip_y)
+    page.wait_for_timeout(600)
+    check("hint dismissed once the shuttle is used", page.eval_on_selector("#strip-hint", "el => !el.classList.contains('visible')"))
+
+    # Only once per burst-opening within the same page load...
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(250)
+    page.query_selector_all(".burst-tile")[1].click()
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(400)
+    check("hint not repeated on the next burst", page.eval_on_selector("#strip-hint", "el => !el.classList.contains('visible')"))
+
+    # ...but a reload is a fresh start, and it shows again.
+    page.reload()
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(500)
+    check("hint returns after a reload", page.eval_on_selector("#strip-hint", "el => el.classList.contains('visible')"))
+
+    # A single-frame burst has no strip at all, so nothing to advertise.
+    page.goto(f"{ALBUM}#b0002:0")
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(400)
+    check("no strip (and no hint) for a single-frame burst", page.eval_on_selector("#filmstrip-wrap", "el => el.hidden"))
+    page.close()
+
+
 def portrait_fit_test(browser):
     print("mobile: a portrait burst stays scaled to fit, at rest and mid-shuttle")
     page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
@@ -469,8 +526,8 @@ def portrait_fit_test(browser):
     during = page.evaluate(FIT_PROBE)
     touch(page, "#filmstrip", "touchend", 330, strip_y)
 
-    check("shuttle really swapped to the thumbnail", during["src"] == "thumb", str(during))
-    check("portrait thumbnail is scaled up, not left small", during["touchesEdge"], str(during))
+    check("shuttle shows the preloaded medium copy", during["src"] == "medium", str(during))
+    check("portrait mid-shuttle is scaled up, not left small", during["touchesEdge"], str(during))
     check("portrait mid-shuttle still fits", during["fits"], str(during))
     check("size does not jump between thumb and display", during["content"] == at_rest["content"],
           f"{during['content']} vs {at_rest['content']}")
@@ -504,6 +561,7 @@ with sync_playwright() as p:
     desktop_tests(browser)
     shuttle_tests(browser)
     zoom_tests(browser)
+    shuttle_hint_test(browser)
     portrait_fit_test(browser)
     video_swipe_test(browser)
     browser.close()

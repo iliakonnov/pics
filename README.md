@@ -3,6 +3,12 @@
 Import photos/video from a Sony ZV-1, group them into bursts, generate web-sized
 derivatives, and publish a static gallery to Yandex Object Storage (S3-compatible).
 
+Each album is published to its own directory under an unguessable name and is
+entirely self-contained — its own page, its own copy of the JS/CSS, its own
+media. The directory URL is the share link. There is no index tying albums
+together, so once an album is uploaded the local copy can be deleted and
+forgotten.
+
 Two parts:
 
 - `pipeline/` — a Python CLI (`pics`) that does the import/convert/publish work.
@@ -71,31 +77,37 @@ Create the static key pair for the bucket in the Yandex Cloud console
 # One-time: make the bucket publicly readable and enable static website hosting.
 pics setup-bucket
 
-# Import everything on the card as one new album.
+# Import everything on the card as one new album. Work is spread across all
+# cores; -j sets the worker count.
 pics import /run/media/$USER/SONY_CARD --title "Выходные на море"
 
-# Review the result locally (originals/thumb/display/preview/video under
-# $PICS_LIBRARY/albums/<album-id>/, plus album.json), then publish it:
-pics upload --album 2026-08-29-a1b2c3
+# Look it over locally first, served exactly as it will be published:
+pics preview --port 8000
 
-# Or publish everything that's changed:
-pics upload --all
+# Publish it. Prints the share link; --album can be omitted when there is
+# only one local album.
+pics upload
 
 pics list
 
-# Look at an album locally, without uploading anything:
-pics preview --port 8000
+# The published directory needs nothing else, so afterwards:
+rm -rf ~/Pictures/zv1/albums/<album-id>
 ```
 
-`import` never uploads by itself — review the generated album locally first.
-`upload` re-uploads `index.html`/`album.html`/JS/CSS/JSON unconditionally
-(they're mutable) and skips media files that already exist remotely (they're
-named by content hash, so an existing key is always identical content).
+`import` never uploads by itself. `upload` re-uploads the page, JS/CSS and
+album.json unconditionally (they're mutable) and skips media that already
+exists remotely — media is named by content hash, so an existing key is
+always identical content.
 
-Re-running `pics import` on the same card is safe: files are deduplicated
-globally by content hash (sha256), so nothing gets reprocessed or
-double-published. Re-running with the *same* `--album-id` resumes/repairs an
-interrupted import instead of creating a new one.
+The album id is the secret: ~96 bits from `secrets.token_urlsafe`, used as
+both the directory name and the share link, so it encodes nothing about the
+date or contents. Pass `--album-id` to choose your own.
+
+Re-running `pics import` with the *same* `--album-id` resumes or repairs an
+interrupted run rather than starting a new album; existing derivatives are
+left alone. Duplicates are removed only *within* one import (the same file
+copied twice onto the card) — the same photos may legitimately be imported
+again later into a fresh album.
 
 ## 5. How it works
 
@@ -115,15 +127,22 @@ interrupted import instead of creating a new one.
   So a burst continues only on a strict +1 step, which correctly splits
   two bursts fired 0.5s apart — something a time gap alone cannot do.
 
-- **Conversion** (`picscli/imaging.py`): originals are losslessly re-encoded
-  to progressive JPEG (`jpegtran`, full EXIF kept, pixels unchanged); a
-  ~2560px "display" JPEG and a ~480px thumbnail are generated
+- **Conversion** (`picscli/imaging.py`), run across all cores: originals are
+  losslessly re-encoded to progressive JPEG (`jpegtran`, full EXIF kept,
+  pixels unchanged); a ~2560px "display" JPEG, a ~1280px "medium" copy and a
+  ~480px thumbnail are generated
   (auto-oriented, EXIF stripped from these derivatives only); an animated
   WebP preview is built from the burst's own thumbnails (photos) or from
   frames sampled across the clip (video) whenever there's more than one
   frame to show. Video is transcoded to 1080p H.264/AAC with
   `+faststart`; the original video file is archived and published as-is
   alongside it.
+  Three sizes rather than two because of what a burst costs. At display
+  size an average frame is 439KB, so a 24-frame burst is 10MB — and, worse,
+  ~17MB *decoded* per frame, or ~420MB resident for the burst. The 1280px
+  medium copy averages 106KB (2.5MB per burst) and still covers a phone
+  screen at 3x DPR, which is what the viewer preloads and animates.
+
 - **Publishing** (`picscli/upload.py`): content-hash-named media gets
   `Cache-Control: public, max-age=31536000, immutable`; HTML/JSON/JS/CSS get
   `no-cache`. The bucket is public-read (per your choice — no signed URLs).
@@ -156,6 +175,11 @@ leave a zoomed photo by pinching back in or double-tapping. Pinching
 almost all the way back snaps cleanly to 1x, and changing frame or burst
 always drops the zoom.
 
+Because the drag-to-shuttle gesture has no visible control, a pair of
+nudging fingertips appears in the empty space either side of the
+thumbnails. It shows once per page load, retires the moment the gesture is
+used, and fades on its own after a few seconds; a reload brings it back.
+
 The touch filmstrip is a **shuttle/jog control, not a scrollbar**: the
 finger's horizontal displacement from where it landed sets the *speed* of
 playback, not the frame. Push further right and the burst runs forward
@@ -165,8 +189,9 @@ deadzone so a tap isn't read as a drag, and a quadratic ramp so slow,
 precise stepping is possible just outside it. Lifting the finger stops the
 animation immediately on the current frame — no inertia. To pick a specific
 frame directly, tap its thumbnail. While shuttling, the stage shows the
-(already-loaded) thumbnail so frames can change at full rate without waiting
-on 2560px JPEGs; the sharp image is restored the moment the finger lifts.
+medium copy, preloaded for the whole burst when it opened, so scrubbing
+stays sharp; frames that have not arrived yet fall back to the thumbnail,
+and the full display image is restored the moment the finger lifts.
 
 The stage scales every frame to fit — both up and down. That matters
 because a shuttle shows the 480px thumbnail, which is smaller than a phone
@@ -184,7 +209,7 @@ none of this depends on having photos or a phone at hand:
 
 ```sh
 python3 tools/make_fixture.py /tmp/pics-site      # synthetic album (needs magick + ffmpeg)
-python3 -m http.server 8791 --directory /tmp/pics-site &
+python3 -m http.server 8791 --directory /tmp/pics-site   # the album is the site root &
 
 python3 -m venv /tmp/pw-venv && /tmp/pw-venv/bin/pip install playwright
 /tmp/pw-venv/bin/python tools/ui_test.py          # drives the system chromium

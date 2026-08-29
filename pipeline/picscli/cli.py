@@ -24,6 +24,23 @@ def _settings(library: str | None) -> config.Settings:
     return config.load_settings(library_root=root)
 
 
+def _local_albums(settings: config.Settings) -> list[str]:
+    if not settings.albums_dir.is_dir():
+        return []
+    return sorted(p.name for p in settings.albums_dir.iterdir() if p.is_dir())
+
+
+def _resolve_album(settings: config.Settings, album_id: str | None) -> str:
+    if album_id:
+        return album_id
+    found = _local_albums(settings)
+    if not found:
+        raise click.ClickException("no local albums — run `pics import` first")
+    if len(found) > 1:
+        raise click.ClickException("several local albums; pick one with --album:\n  " + "\n  ".join(found))
+    return found[0]
+
+
 def _web_root(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit).expanduser().resolve()
@@ -39,17 +56,23 @@ def main() -> None:
 @click.argument("card_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--title", default=None, help="Album title (default: capture date)")
 @click.option("--album-id", default=None, help="Reuse a specific album id (to resume an interrupted import)")
+@click.option("-j", "--jobs", default=None, type=int, help="Parallel workers (default: one per core)")
 @library_option
-def import_cmd(card_root: Path, title: str | None, album_id: str | None, library: str | None) -> None:
+def import_cmd(
+    card_root: Path, title: str | None, album_id: str | None, jobs: int | None, library: str | None
+) -> None:
     """Import JPEGs/videos from CARD_ROOT as one new album."""
     settings = _settings(library)
     try:
-        result_id = importer.run_import(card_root, settings, title=title, album_id=album_id, log=click.echo)
+        result_id = importer.run_import(
+            card_root, settings, title=title, album_id=album_id, jobs=jobs, log=click.echo
+        )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"\nImported album '{result_id}'.")
     click.echo(f"Local files: {settings.album_dir(result_id)}")
-    click.echo("Review it, then publish with: pics upload --album " + result_id)
+    click.echo(f"Review it with: pics preview --album {result_id}")
+    click.echo(f"Publish it with: pics upload --album {result_id}")
 
 
 @main.command("list")
@@ -72,47 +95,27 @@ def list_cmd(library: str | None) -> None:
 
 
 @main.command("upload")
-@click.option("--album", "album_id", default=None, help="Upload only this album id")
-@click.option("--all", "upload_all", is_flag=True, help="Upload every local album")
+@click.option("--album", "album_id", default=None, help="Album id to publish (default: the only local album)")
 @click.option("--web", "web_root_opt", default=None, help="Path to the web/ app root (default: repo's web/ dir)")
-@click.option("--force", is_flag=True, help="Re-upload immutable media even if already present remotely")
+@click.option("--force", is_flag=True, help="Re-upload media even if already present remotely")
 @library_option
-def upload_cmd(
-    album_id: str | None,
-    upload_all: bool,
-    web_root_opt: str | None,
-    force: bool,
-    library: str | None,
-) -> None:
-    """Publish the web app, albums.json and one/all albums to S3."""
-    if not album_id and not upload_all:
-        raise click.ClickException("pass --album ID or --all")
-
+def upload_cmd(album_id: str | None, web_root_opt: str | None, force: bool, library: str | None) -> None:
+    """Publish one album as a self-contained directory and print its link."""
     settings = _settings(library)
+    resolved = _resolve_album(settings, album_id)
     web_root = _web_root(web_root_opt)
     client = upload.get_client(settings)
 
-    site_stats = upload.sync_site_assets(client, settings, web_root)
-    click.echo(f"site assets: {site_stats.uploaded} uploaded")
-
-    album_ids: list[str]
-    if upload_all:
-        if not settings.albums_dir.is_dir():
-            raise click.ClickException("no local albums found")
-        album_ids = sorted(p.name for p in settings.albums_dir.iterdir() if p.is_dir())
-    else:
-        album_ids = [album_id]
-
-    with Manifest(settings.state_db_path) as db:
-        for aid in album_ids:
-            stats = upload.sync_album(client, settings, aid, web_root, force=force)
-            click.echo(f"{aid}: {stats.uploaded} uploaded, {stats.skipped} already present")
-            for f in db.files_for_album(aid):
-                db.mark_uploaded(f.hash)
+    stats = upload.sync_album(client, settings, resolved, web_root, force=force)
+    click.echo(f"{resolved}: {stats.uploaded} uploaded, {stats.skipped} already present")
+    click.echo("\nShare this link:")
+    click.echo("  " + upload.album_url(settings, resolved))
+    click.echo("\nThe directory is self-contained, so the local copy can now be deleted:")
+    click.echo(f"  rm -rf {settings.album_dir(resolved)}")
 
 
 @main.command("preview")
-@click.option("--album", "album_id", default=None, help="Preview only this album id (default: all)")
+@click.option("--album", "album_id", default=None, help="Album id to preview (default: the only local album)")
 @click.option("--out", "out_dir", default=None, help="Where to assemble the site (default: <library>/_preview)")
 @click.option("--port", default=8000, show_default=True, help="Port to serve on")
 @click.option("--web", "web_root_opt", default=None, help="Path to the web/ app root (default: repo's web/ dir)")
@@ -126,22 +129,16 @@ def preview_cmd(
     no_serve: bool,
     library: str | None,
 ) -> None:
-    """Build the site locally and serve it — nothing is uploaded."""
+    """Serve one album locally, exactly as it will be published."""
     settings = _settings(library)
-    web_root = _web_root(web_root_opt)
+    resolved = _resolve_album(settings, album_id)
+    target = Path(out_dir).expanduser() if out_dir else settings.library_root / "_preview" / resolved
 
-    if album_id:
-        album_ids = [album_id]
-    else:
-        if not settings.albums_dir.is_dir():
-            raise click.ClickException("no local albums yet — run `pics import` first")
-        album_ids = sorted(p.name for p in settings.albums_dir.iterdir() if p.is_dir())
-    if not album_ids:
-        raise click.ClickException("no albums to preview")
-
-    target = Path(out_dir).expanduser() if out_dir else settings.library_root / "_preview"
-    root = preview.build_site(settings, web_root, target, album_ids)
-    click.echo(f"site assembled at {root} ({len(album_ids)} album(s))")
+    try:
+        root = preview.build_site(settings, _web_root(web_root_opt), target, resolved)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"album {resolved} assembled at {root}")
 
     if no_serve:
         return

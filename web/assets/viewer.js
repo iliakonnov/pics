@@ -11,17 +11,17 @@ const SCROLL_SETTLE_MS = 120;
 // wheel. Further right = faster forward, further left = faster backward,
 // wrapping around the ends of the burst. Lifting the finger stops the
 // animation immediately (no inertia) on whatever frame is showing.
-// Zoom
-const MAX_SCALE = 6;
-const DOUBLE_TAP_SCALE = 2.5;
-const DOUBLE_TAP_MS = 300;
-const DOUBLE_TAP_SLOP_PX = 30;
-
 const SHUTTLE_DEADZONE_PX = 12;
 const SHUTTLE_FULL_PX = 130; // displacement at which max speed is reached
 const SHUTTLE_MIN_FPS = 2;
 const SHUTTLE_MAX_FPS = 24; // matches the ZV-1's own top continuous-shooting rate
 const TAP_SLOP_PX = 10;
+
+// Zoom
+const MAX_SCALE = 6;
+const DOUBLE_TAP_SCALE = 2.5;
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_SLOP_PX = 30;
 
 /**
  * Fullscreen burst viewer. Binds to the #viewer DOM already present in
@@ -46,6 +46,8 @@ export function initViewer(bursts) {
   const nextBurstBtn = document.getElementById("viewer-next-burst");
   const mediaHost = document.getElementById("viewer-media");
   const filmstrip = document.getElementById("filmstrip");
+  const filmstripWrap = document.getElementById("filmstrip-wrap");
+  const stripHint = document.getElementById("strip-hint");
 
   const coarse = isCoarsePointer();
 
@@ -74,18 +76,64 @@ export function initViewer(bursts) {
     return { bi, fi };
   }
 
-  function preload(url) {
+  // Everything the browser has finished fetching, so a shuttle can pick
+  // the best quality that is ready *right now* rather than always
+  // dropping to the thumbnail. Entries are kept referenced (rather than
+  // just recorded) so the decoded bitmap stays around while the burst is
+  // open; the HTTP cache keeps the bytes regardless, since media is
+  // content-hash-named and served immutable.
+  const ready = new Set();
+  const held = new Map();
+
+  function preload(url, { hold = false } = {}) {
     if (!url) return;
-    new Image().src = url;
+    let img = held.get(url);
+    if (!img) {
+      if (ready.has(url) && !hold) return;
+      img = new Image();
+      img.addEventListener("load", () => ready.add(url), { once: true });
+      img.src = url;
+      if (hold) held.set(url, img);
+    }
+    if (img.complete && img.naturalWidth) ready.add(url);
+  }
+
+  /** Best quality already fetched for this frame; thumbnail as last resort. */
+  function shuttleSource(frame) {
+    if (frame.medium && ready.has(frame.medium)) return frame.medium;
+    if (frame.display && ready.has(frame.display)) return frame.display;
+    return frame.thumb;
+  }
+
+  /** Pull the whole burst down at medium size so shuttling stays sharp. */
+  let preloadedBurst = -1;
+
+  function preloadBurstForShuttle(bi) {
+    if (preloadedBurst === bi) return;
+    const frames = bursts[bi].frames;
+    if (frames.length < 2) return;
+    preloadedBurst = bi;
+    held.clear();
+    // Start at the frame being viewed and fan outwards, so the frames
+    // reached first are the ones ready first.
+    const order = [];
+    for (let d = 0; d < frames.length; d++) {
+      const a = frameIndex + d;
+      const b = frameIndex - d;
+      if (a < frames.length) order.push(frames[a]);
+      if (d && b >= 0) order.push(frames[b]);
+    }
+    for (const frame of order) preload(frame.medium || frame.display, { hold: true });
   }
 
   // -- rendering ------------------------------------------------------
 
   /**
-   * Swap the stage media to the current frame. During a shuttle drag
-   * `lowRes` reuses the (already decoded) filmstrip thumbnail so frames
-   * can change at up to 24fps without waiting on 2560px display JPEGs;
-   * the sharp image is restored when the finger lifts.
+   * Swap the stage media to the current frame. While shuttling it shows
+   * the best copy already fetched — normally the medium (1280px) one,
+   * preloaded for the whole burst when it opened — and only falls back to
+   * the thumbnail for frames that have not arrived yet. The full display
+   * image is restored when the finger lifts.
    */
   function renderMedia({ lowRes = false } = {}) {
     const frame = currentFrame();
@@ -101,7 +149,7 @@ export function initViewer(bursts) {
       return;
     }
 
-    const src = lowRes ? frame.thumb : frame.display || frame.thumb;
+    const src = lowRes ? shuttleSource(frame) : frame.display || frame.thumb;
     let img = mediaHost.querySelector("img");
     if (!img) {
       mediaHost.innerHTML = "";
@@ -140,6 +188,7 @@ export function initViewer(bursts) {
   }
 
   function preloadNeighbors() {
+    preloadBurstForShuttle(burstIndex);
     const frames = currentBurst().frames;
     if (frameIndex > 0) preload(frames[frameIndex - 1].display || frames[frameIndex - 1].thumb);
     if (frameIndex < frames.length - 1) preload(frames[frameIndex + 1].display || frames[frameIndex + 1].thumb);
@@ -165,6 +214,7 @@ export function initViewer(bursts) {
     // doesn't mistake it for the user browsing the strip by hand.
     programmaticScrollUntil = performance.now() + (smooth ? 700 : 120);
     filmstrip.scrollTo({ left, behavior: smooth ? "smooth" : "auto" });
+    updateHintBackdrops();
   }
 
   function buildFilmstrip() {
@@ -172,9 +222,12 @@ export function initViewer(bursts) {
     filmstrip.innerHTML = "";
     if (burst.frames.length < 2) {
       filmstrip.hidden = true;
+      if (filmstripWrap) filmstripWrap.hidden = true;
       return;
     }
     filmstrip.hidden = false;
+    if (filmstripWrap) filmstripWrap.hidden = false;
+    showShuttleHint();
     burst.frames.forEach((frame, fi) => {
       filmstrip.append(
         el(
@@ -266,6 +319,46 @@ export function initViewer(bursts) {
   const nextBurst = () => goTo(burstIndex + 1, 0);
   const prevBurst = () => goTo(burstIndex - 1, 0);
 
+  // -- shuttle hint ----------------------------------------------------
+  //
+  // Dragging the filmstrip to scrub is not something a first-time viewer
+  // can guess at, so a pair of nudging fingertips is parked in the empty
+  // space either side of the thumbnails. It only appears where the
+  // gesture exists (touch), shows once per page load, and retires as soon
+  // as the gesture is used or after a few seconds. Deliberately not
+  // remembered across loads: a reload or a later visit shows it again.
+
+  const HINT_TIMEOUT_MS = 9000;
+  let hintTimer = null;
+  let hintSpent = false; // reset by a page load, which is the point
+
+  function hideShuttleHint({ spend = false } = {}) {
+    if (!stripHint) return;
+    clearTimeout(hintTimer);
+    stripHint.classList.remove("visible");
+    if (spend) hintSpent = true;
+  }
+
+  /** Give a hint a backdrop when thumbnails run underneath it. */
+  function updateHintBackdrops() {
+    if (!stripHint || !stripHint.classList.contains("visible")) return;
+    const thumbs = [...filmstrip.querySelectorAll(".filmstrip-thumb")].map((t) => t.getBoundingClientRect());
+    for (const side of stripHint.querySelectorAll(".strip-hint-side")) {
+      const r = side.getBoundingClientRect();
+      const covered = thumbs.some((t) => t.right > r.left - 4 && t.left < r.right + 4);
+      side.classList.toggle("over-thumbs", covered);
+    }
+  }
+
+  function showShuttleHint() {
+    if (!stripHint || !coarse || hintSpent) return;
+    hintSpent = true; // shown once per page load, not once per burst
+    stripHint.classList.add("visible");
+    requestAnimationFrame(updateHintBackdrops);
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => hideShuttleHint(), HINT_TIMEOUT_MS);
+  }
+
   // -- touch shuttle --------------------------------------------------
 
   let shuttleActive = false;
@@ -314,6 +407,7 @@ export function initViewer(bursts) {
   }
 
   function startShuttle(x) {
+    hideShuttleHint({ spend: true });
     shuttleActive = true;
     shuttleStartX = x;
     shuttleDx = 0;
