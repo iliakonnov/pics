@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Альбом</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header class="top-bar">
+  <a href="/" class="back-link" aria-label="Ко всем альбомам">&larr;</a>
+  <h1 class="site-title" id="album-title">Альбом</h1>
+</header>
+<main>
+  <div id="burst-grid" class="burst-grid" aria-live="polite"></div>
+  <p id="empty-state" class="empty-state" hidden>В альбоме пока нет фотографий.</p>
+</main>
+
+<section id="viewer" class="viewer" hidden>
+  <div class="viewer-toolbar">
+    <button id="viewer-close" class="icon-btn" aria-label="Закрыть" type="button">&#10005;</button>
+    <div id="viewer-info" class="viewer-info"></div>
+    <a id="viewer-download" class="icon-btn" download aria-label="Скачать оригинал">&#11123;</a>
+  </div>
+  <div id="viewer-stage" class="viewer-stage">
+    <button id="viewer-prev-burst" class="nav-btn nav-prev" aria-label="Предыдущая серия" type="button">&#8249;</button>
+    <div id="viewer-media" class="viewer-media"></div>
+    <button id="viewer-next-burst" class="nav-btn nav-next" aria-label="Следующая серия" type="button">&#8250;</button>
+  </div>
+  <div id="filmstrip" class="filmstrip" hidden></div>
+</section>
+
+<script type="module" src="/assets/album-page.js"></script>
+</body>
+</html>

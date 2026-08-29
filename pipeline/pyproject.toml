@@ -1,0 +1,22 @@
+[project]
+name = "picscli"
+version = "0.1.0"
+description = "Import, process and publish Sony ZV-1 photo/video albums to S3-compatible storage"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "boto3>=1.34",
+]
+
+[project.scripts]
+pics = "picscli.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["picscli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
