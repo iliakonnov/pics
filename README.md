@@ -56,7 +56,7 @@ pytest
 ## 3. Configuration
 
 `pics` reads config from environment variables, or a `.env` file (`KEY=VALUE`
-lines) in the current directory:
+lines) found in the working directory or any directory above it:
 
 | Variable | Purpose | Default |
 |---|---|---|
@@ -161,7 +161,7 @@ again later into a fresh album.
   Pick the threshold from the data: the camera fires fast, so bursts are
   short in *real* time even when they hold many frames. Of 283 multi-frame
   bursts in a 965-photo album, 1 spans over 1.5s, 14 over 0.5s and 56 over
-  0.3s.
+  0.3s. The published album uses 0.5s: 14 clips, 9.3MB in total.
 
 - **Publishing** (`picscli/upload.py`): content-hash-named media gets
   `Cache-Control: public, max-age=31536000, immutable`; HTML/JSON/JS/CSS get

@@ -131,9 +131,24 @@ def _load_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
+def _find_dotenv(start: Path) -> Path | None:
+    """Look for .env in the current directory and its parents.
+
+    Credentials live at the top of the checkout, but `pics` is just as
+    likely to be run from pipeline/ or anywhere else inside it.
+    """
+    for directory in [start, *start.parents]:
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def load_settings(library_root: Path | None = None, env_file: Path | None = None) -> Settings:
     env = dict(os.environ)
-    env.update(_load_dotenv(env_file or Path.cwd() / ".env"))
+    found = env_file or _find_dotenv(Path.cwd())
+    if found:
+        env.update(_load_dotenv(found))
 
     root = library_root or Path(env.get("PICS_LIBRARY", "~/Pictures/zv1")).expanduser()
     return Settings(
