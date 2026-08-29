@@ -98,8 +98,48 @@ def make_medium(src: Path, dst: Path) -> tuple[int, int]:
     return make_resized_webp(src, dst, max_dim=config.MEDIUM_MAX_DIM, quality=config.MEDIUM_QUALITY)
 
 
+# The first pass of a progressive JPEG is what decides how soon *something*
+# appears, and until it has fully arrived the browser paints it row by row —
+# which reads as a plain top-to-bottom load. ImageMagick's default script
+# spends ~12% of the file on that first pass; this one starts with a coarse
+# DC scan (three low bits dropped, refined back a bit at a time) and gets it
+# to ~7%, at a cost of about 2% total size.
+_PROGRESSIVE_SCANS = """0,1,2: 0-0, 0, 3;
+0:     1-5, 0, 2;
+2:     1-63, 0, 2;
+1:     1-63, 0, 2;
+0:     6-63, 0, 2;
+0,1,2: 0-0, 3, 2;
+0,1,2: 0-0, 2, 1;
+0,1,2: 0-0, 1, 0;
+2:     1-63, 2, 1;
+1:     1-63, 2, 1;
+0:     1-63, 2, 1;
+2:     1-63, 1, 0;
+1:     1-63, 1, 0;
+0:     1-63, 1, 0;
+"""
+
+
+def rescan_progressive(path: Path) -> None:
+    """Re-lay a JPEG's progressive scans in place, losslessly."""
+    with tempfile.NamedTemporaryFile("w", suffix=".scans", delete=False) as script:
+        script.write(_PROGRESSIVE_SCANS)
+        script_path = Path(script.name)
+    out = path.with_suffix(".rescan.jpg")
+    try:
+        _run([config.JPEGTRAN_BIN, "-copy", "none", "-progressive",
+              "-scans", str(script_path), "-outfile", str(out), str(path)])
+        out.replace(path)
+    finally:
+        script_path.unlink(missing_ok=True)
+        out.unlink(missing_ok=True)
+
+
 def make_display_jpeg(src: Path, dst: Path) -> tuple[int, int]:
-    return make_resized_jpeg(src, dst, max_dim=config.DISPLAY_MAX_DIM, quality=config.DISPLAY_QUALITY)
+    dims = make_resized_jpeg(src, dst, max_dim=config.DISPLAY_MAX_DIM, quality=config.DISPLAY_QUALITY)
+    rescan_progressive(dst)
+    return dims
 
 
 def select_preview_frames(frames: list, max_frames: int) -> list:

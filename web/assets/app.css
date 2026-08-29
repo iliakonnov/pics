@@ -161,6 +161,9 @@ main {
 .viewer-media::before {
   content: "";
   position: absolute;
+  /* Positioned, so it paints above the static <video> below it. Without
+     this it swallows taps on the play button in the centre. */
+  pointer-events: none;
   left: 50%;
   top: 50%;
   width: 96px;
@@ -354,6 +357,8 @@ main {
 .viewer-media video {
   max-width: 100%;
   max-height: 100%;
+  width: auto;
+  height: auto;
 }
 
 .viewer-media img.zoomed {

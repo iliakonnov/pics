@@ -531,6 +531,53 @@ def shuttle_hint_test(browser):
     page.close()
 
 
+def video_playback_test(browser):
+    print("video: the player is actually reachable and does not jump about")
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+    watch(page, "video")
+    page.goto(f"{ALBUM}#b0003:0")
+    page.wait_for_selector("#viewer-media video")
+    page.wait_for_timeout(600)
+
+    check(
+        "nothing covers the middle of the player",
+        page.evaluate(
+            """() => {
+                const v = document.querySelector('#viewer-media video').getBoundingClientRect();
+                const hit = document.elementFromPoint(v.left + v.width / 2, v.top + v.height / 2);
+                return hit && hit.tagName === 'VIDEO';
+            }"""
+        ),
+    )
+    check(
+        "the placeholder cannot intercept taps",
+        page.evaluate(
+            "() => getComputedStyle(document.querySelector('#viewer-media'), '::before').pointerEvents === 'none'"
+        ),
+    )
+
+    before = page.eval_on_selector("#viewer-media video", "el => el.getBoundingClientRect().height")
+    check("player is sized before playback, not 150px tall", before > 200, f"{before:.0f}px")
+
+    page.eval_on_selector("#viewer-media video", "el => el.play()")
+    page.wait_for_timeout(900)
+    after = page.eval_on_selector("#viewer-media video", "el => el.getBoundingClientRect().height")
+    check("playing does not resize the player", abs(after - before) <= 2, f"{before:.0f}px -> {after:.0f}px")
+    check("it really is playing", page.eval_on_selector("#viewer-media video", "el => !el.paused"))
+    check(
+        "player still fits the stage",
+        page.evaluate(
+            """() => {
+                const v = document.querySelector('#viewer-media video').getBoundingClientRect();
+                const s = document.getElementById('viewer-stage').getBoundingClientRect();
+                return v.height <= s.height + 1 && v.width <= s.width + 1;
+            }"""
+        ),
+    )
+    shot(page, "26-video-player")
+    page.close()
+
+
 def portrait_fit_test(browser):
     print("mobile: a portrait burst stays scaled to fit, at rest and mid-shuttle")
     page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
@@ -800,6 +847,7 @@ with sync_playwright() as p:
     shuttle_tests(browser)
     zoom_tests(browser)
     shuttle_hint_test(browser)
+    video_playback_test(browser)
     portrait_fit_test(browser)
     placeholder_test(browser)
     lazy_loading_test(browser)

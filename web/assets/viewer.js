@@ -62,6 +62,7 @@ export function initViewer(bursts) {
   let scale = 1;
   let tx = 0;
   let ty = 0;
+  let renderToken = 0;
 
   const currentBurst = () => bursts[burstIndex];
   const currentFrame = () => currentBurst().frames[frameIndex];
@@ -142,11 +143,14 @@ export function initViewer(bursts) {
   // -- rendering ------------------------------------------------------
 
   /**
-   * Swap the stage media to the current frame. While shuttling it shows
-   * the best copy already fetched — normally the medium (1280px) one,
-   * preloaded for the whole burst when it opened — and only falls back to
-   * the thumbnail for frames that have not arrived yet. The full display
-   * image is restored when the finger lifts.
+   * Swap the stage media to the current frame.
+   *
+   * The display JPEG is ~450KB, and even though it is progressive its
+   * first pass is a few tens of KB — until that has arrived the browser
+   * paints it row by row, which reads as a slow top-to-bottom load. So
+   * whatever copy is already in hand goes up immediately (the grid tile's
+   * thumbnail always is, having just been on screen) and the sharp one
+   * replaces it the moment it finishes. Shuttling uses the same rule.
    */
   function renderMedia({ lowRes = false } = {}) {
     const frame = currentFrame();
@@ -159,11 +163,32 @@ export function initViewer(bursts) {
     if (frame.video) {
       mediaHost.classList.remove("loading");
       mediaHost.innerHTML = "";
-      mediaHost.append(el("video", { src: frame.video, poster: frame.thumb, controls: true, playsinline: true }));
+      const video = el("video", {
+        src: frame.video,
+        poster: frame.thumb,
+        controls: true,
+        playsinline: true,
+        preload: "metadata",
+      });
+      // Phones routinely ignore preload to save data, leaving the element
+      // at its default 300x150 until playback starts and then jumping to
+      // full size. The frame's real dimensions are in album.json, so the
+      // box can be right from the start.
+      if (frame.w && frame.h) video.style.aspectRatio = `${frame.w} / ${frame.h}`;
+      mediaHost.append(video);
       return;
     }
 
-    const src = lowRes ? shuttleSource(frame) : frame.display || frame.thumb;
+    const full = frame.display || frame.thumb;
+    const token = ++renderToken;
+    let src;
+    if (lowRes || ready.has(full) || full === frame.thumb) {
+      src = lowRes ? shuttleSource(frame) : full;
+    } else {
+      src = shuttleSource(frame); // instant, from cache
+      upgradeWhenReady(full, token);
+    }
+
     let img = mediaHost.querySelector("img");
     if (!img) {
       mediaHost.innerHTML = "";
@@ -192,6 +217,23 @@ export function initViewer(bursts) {
     // Only a successful load clears it: if the picture never arrives, the
     // placeholder is exactly what should stay on screen.
     img.addEventListener("load", () => mediaHost.classList.remove("loading"), { once: true });
+  }
+
+  /** Put the sharp copy up as soon as it lands, unless we have moved on. */
+  function upgradeWhenReady(url, token) {
+    const probe = new Image();
+    probe.addEventListener(
+      "load",
+      () => {
+        ready.add(url);
+        if (token !== renderToken) return;
+        const img = mediaHost.querySelector("img");
+        if (img && img.getAttribute("src") !== url) img.setAttribute("src", url);
+        mediaHost.classList.remove("loading");
+      },
+      { once: true }
+    );
+    probe.src = url;
   }
 
   function updateChrome() {
