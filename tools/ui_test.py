@@ -580,6 +580,49 @@ ROW_PROBE = """() => {
 }"""
 
 
+def toolbar_icons_test(browser):
+    print("toolbar: controls are drawn, not typed as font glyphs")
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+    watch(page, "icons")
+    page.goto(f"{ALBUM}#b0000:0")
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(400)
+
+    check(
+        "no control relies on a font glyph",
+        page.evaluate(
+            """() => ['#viewer-close', '#viewer-download', '#viewer-prev-burst', '#viewer-next-burst']
+                 .every(sel => {
+                     const el = document.querySelector(sel);
+                     return el.querySelector('svg') && !el.textContent.trim();
+                 })"""
+        ),
+    )
+    check(
+        "icons are actually painted at a usable size",
+        page.evaluate(
+            """() => ['#viewer-close', '#viewer-download'].every(sel => {
+                   const r = document.querySelector(sel).querySelector('svg').getBoundingClientRect();
+                   return r.width >= 16 && r.height >= 16;
+               })"""
+        ),
+    )
+    check(
+        "the clip button says what it downloads",
+        page.eval_on_selector("#viewer-clip", "el => el.textContent.trim()") == "MP4",
+    )
+    check(
+        "every control still names itself for screen readers",
+        page.evaluate(
+            """() => ['#viewer-close', '#viewer-download', '#viewer-clip',
+                      '#viewer-prev-burst', '#viewer-next-burst']
+                 .every(sel => (document.querySelector(sel).getAttribute('aria-label') || '').length > 3)"""
+        ),
+    )
+    shot(page, "25-toolbar-icons")
+    page.close()
+
+
 def justified_grid_test(browser):
     print("grid: rows are filled edge to edge at any width")
     for width, height in [(390, 844), (768, 1024), (1400, 950)]:
@@ -741,6 +784,7 @@ def video_swipe_test(browser):
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=CHROMIUM, headless=True)
     desktop_tests(browser)
+    toolbar_icons_test(browser)
     justified_grid_test(browser)
     shuttle_tests(browser)
     zoom_tests(browser)

@@ -235,9 +235,52 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
   border-radius: 999px;
   text-decoration: none;
+  flex: 0 0 auto;
+}
+
+/* Drawn rather than typed: an icon glyph is only as reliable as whatever
+   font the device happens to have, and several of the ones used here are
+   missing from common system fonts. */
+.icon-btn svg,
+.nav-btn svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nav-btn svg {
+  width: 30px;
+  height: 30px;
+}
+
+/* The burst clip says what it gives you, which no icon manages to. */
+.text-btn {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  text-decoration: none;
+  color: #fff;
+}
+
+.text-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.text-btn[hidden] {
+  display: none;
 }
 
 .icon-btn[hidden] {
@@ -325,7 +368,6 @@ main {
   min-width: 44px;
   display: flex;
   align-items: center;
-  font-size: 32px;
   color: rgba(255, 255, 255, 0.55);
   z-index: 1;
 }
