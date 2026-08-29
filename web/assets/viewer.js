@@ -11,6 +11,12 @@ const SCROLL_SETTLE_MS = 120;
 // wheel. Further right = faster forward, further left = faster backward,
 // wrapping around the ends of the burst. Lifting the finger stops the
 // animation immediately (no inertia) on whatever frame is showing.
+// Zoom
+const MAX_SCALE = 6;
+const DOUBLE_TAP_SCALE = 2.5;
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_SLOP_PX = 30;
+
 const SHUTTLE_DEADZONE_PX = 12;
 const SHUTTLE_FULL_PX = 130; // displacement at which max speed is reached
 const SHUTTLE_MIN_FPS = 2;
@@ -50,6 +56,9 @@ export function initViewer(bursts) {
   let wheelAccum = 0;
   let scrollSettleTimer = null;
   let programmaticScrollUntil = 0;
+  let scale = 1;
+  let tx = 0;
+  let ty = 0;
 
   const currentBurst = () => bursts[burstIndex];
   const currentFrame = () => currentBurst().frames[frameIndex];
@@ -81,6 +90,11 @@ export function initViewer(bursts) {
   function renderMedia({ lowRes = false } = {}) {
     const frame = currentFrame();
 
+    // Whatever is shown next starts unzoomed.
+    scale = 1;
+    tx = 0;
+    ty = 0;
+
     if (frame.video) {
       mediaHost.innerHTML = "";
       mediaHost.append(el("video", { src: frame.video, poster: frame.thumb, controls: true, playsinline: true }));
@@ -94,6 +108,9 @@ export function initViewer(bursts) {
       img = el("img", { alt: "" });
       mediaHost.append(img);
     }
+    img.style.transition = "";
+    img.style.transform = "";
+    img.classList.remove("zoomed");
     if (img.getAttribute("src") !== src) img.setAttribute("src", src);
   }
 
@@ -439,35 +456,185 @@ export function initViewer(bursts) {
     { passive: false }
   );
 
-  // Horizontal swipe on the stage -> burst nav; swipe down -> close.
-  // Skipped while a video is showing so scrubbing its native controls
-  // doesn't get misread as a swipe.
-  let touchStartX = 0;
-  let touchStartY = 0;
-  let tracking = false;
+  // -- stage gestures: zoom, pan, swipe --------------------------------
+  //
+  // At 1x a horizontal drag moves between bursts and a downward drag
+  // closes. Zoomed in, the same drag pans the photo instead, so the two
+  // never fight: to leave a zoomed photo you zoom back out (pinch in or
+  // double-tap). Pinch and double-tap zoom around the point being
+  // touched, the way a photo viewer is expected to behave.
+
+  const zoomTarget = () => mediaHost.querySelector("img");
+  const distance = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const midpoint = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
+
+  function applyTransform(animate = false) {
+    const img = zoomTarget();
+    if (!img) return;
+    img.style.transition = animate ? "transform .18s ease-out" : "";
+    img.style.transform =
+      scale === 1 && tx === 0 && ty === 0 ? "" : `translate(${tx}px, ${ty}px) scale(${scale})`;
+    img.classList.toggle("zoomed", scale > 1);
+  }
+
+  function clampPan() {
+    const img = zoomTarget();
+    if (!img) {
+      tx = 0;
+      ty = 0;
+      return;
+    }
+    const maxX = Math.max(0, (img.offsetWidth * scale - stage.clientWidth) / 2);
+    const maxY = Math.max(0, (img.offsetHeight * scale - stage.clientHeight) / 2);
+    tx = clamp(tx, -maxX, maxX);
+    ty = clamp(ty, -maxY, maxY);
+  }
+
+  function zoomAround(nextScale, px, py, { animate = false, from = null } = {}) {
+    const base = from || { scale, tx, ty };
+    const rect = stage.getBoundingClientRect();
+    const relX = px - (rect.left + rect.width / 2);
+    const relY = py - (rect.top + rect.height / 2);
+    scale = clamp(nextScale, 1, MAX_SCALE);
+    const ratio = scale / base.scale;
+    tx = relX - (relX - base.tx) * ratio;
+    ty = relY - (relY - base.ty) * ratio;
+    if (scale === 1) {
+      tx = 0;
+      ty = 0;
+    }
+    clampPan();
+    applyTransform(animate);
+  }
+
+  function toggleZoom(px, py) {
+    if (!zoomTarget()) return;
+    if (scale > 1) {
+      scale = 1;
+      tx = 0;
+      ty = 0;
+      applyTransform(true);
+    } else {
+      zoomAround(DOUBLE_TAP_SCALE, px, py, { animate: true });
+    }
+  }
+
+  let gesture = null;
+  let lastTapAt = 0;
+  let lastTapX = 0;
+  let lastTapY = 0;
 
   stage.addEventListener(
     "touchstart",
     (event) => {
-      if (event.touches.length !== 1 || mediaHost.querySelector("video")) {
-        tracking = false;
+      if (event.touches.length === 2) {
+        const m = midpoint(event.touches[0], event.touches[1]);
+        gesture = {
+          mode: "pinch",
+          startDistance: distance(event.touches[0], event.touches[1]),
+          from: { scale, tx, ty },
+          anchorX: m.x,
+          anchorY: m.y,
+        };
         return;
       }
-      tracking = true;
-      touchStartX = event.touches[0].clientX;
-      touchStartY = event.touches[0].clientY;
+      if (event.touches.length !== 1) {
+        gesture = null;
+        return;
+      }
+      // Touches that land on the video itself belong to its controls.
+      if (event.target.closest("video")) {
+        gesture = null;
+        return;
+      }
+      const touch = event.touches[0];
+      gesture = {
+        mode: scale > 1 ? "pan" : "swipe",
+        x0: touch.clientX,
+        y0: touch.clientY,
+        from: { scale, tx, ty },
+        startedAt: performance.now(),
+        moved: false,
+      };
     },
     { passive: true }
   );
 
   stage.addEventListener(
+    "touchmove",
+    (event) => {
+      if (!gesture) return;
+
+      if (gesture.mode === "pinch") {
+        if (event.touches.length !== 2) return;
+        const spread = distance(event.touches[0], event.touches[1]);
+        const m = midpoint(event.touches[0], event.touches[1]);
+        zoomAround(gesture.from.scale * (spread / gesture.startDistance), m.x, m.y, { from: gesture.from });
+        event.preventDefault();
+        return;
+      }
+
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const dx = touch.clientX - gesture.x0;
+      const dy = touch.clientY - gesture.y0;
+      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) gesture.moved = true;
+
+      if (gesture.mode === "pan") {
+        tx = gesture.from.tx + dx;
+        ty = gesture.from.ty + dy;
+        clampPan();
+        applyTransform();
+        event.preventDefault();
+      }
+    },
+    { passive: false }
+  );
+
+  stage.addEventListener(
     "touchend",
     (event) => {
-      if (!tracking) return;
-      tracking = false;
+      if (!gesture) return;
+
+      if (gesture.mode === "pinch") {
+        if (event.touches.length > 0) return; // second finger still down
+        gesture = null;
+        if (scale <= 1.05) {
+          scale = 1;
+          tx = 0;
+          ty = 0;
+          applyTransform(true);
+        }
+        return;
+      }
+
+      const finished = gesture;
+      gesture = null;
       const touch = event.changedTouches[0];
-      const dx = touch.clientX - touchStartX;
-      const dy = touch.clientY - touchStartY;
+      const dx = touch.clientX - finished.x0;
+      const dy = touch.clientY - finished.y0;
+
+      // Decide tap vs drag from where the finger actually ended up, not
+      // from whether a touchmove happened to fire.
+      const travelled = Math.hypot(dx, dy);
+      if (!finished.moved && travelled < 10 && performance.now() - finished.startedAt < 300) {
+        const now = performance.now();
+        const isDouble =
+          now - lastTapAt < DOUBLE_TAP_MS &&
+          Math.hypot(touch.clientX - lastTapX, touch.clientY - lastTapY) < DOUBLE_TAP_SLOP_PX;
+        if (isDouble) {
+          lastTapAt = 0;
+          toggleZoom(touch.clientX, touch.clientY);
+        } else {
+          lastTapAt = now;
+          lastTapX = touch.clientX;
+          lastTapY = touch.clientY;
+        }
+        return;
+      }
+
+      if (finished.mode === "pan" || scale > 1) return; // dragging a zoomed photo never navigates
+
       if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > SWIPE_THRESHOLD) {
         if (dx < 0) nextBurst();
         else prevBurst();
@@ -477,6 +644,29 @@ export function initViewer(bursts) {
     },
     { passive: true }
   );
+
+  // Mouse equivalents: double-click toggles zoom, drag pans while zoomed.
+  stage.addEventListener("dblclick", (event) => {
+    if (event.target.closest("video")) return;
+    toggleZoom(event.clientX, event.clientY);
+  });
+
+  let mousePan = null;
+  stage.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || scale === 1 || !zoomTarget()) return;
+    mousePan = { x0: event.clientX, y0: event.clientY, tx, ty };
+    event.preventDefault();
+  });
+  window.addEventListener("mousemove", (event) => {
+    if (!mousePan) return;
+    tx = mousePan.tx + (event.clientX - mousePan.x0);
+    ty = mousePan.ty + (event.clientY - mousePan.y0);
+    clampPan();
+    applyTransform();
+  });
+  window.addEventListener("mouseup", () => {
+    mousePan = null;
+  });
 
   return { open, openFromHash };
 }

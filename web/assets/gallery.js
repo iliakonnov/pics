@@ -1,5 +1,11 @@
 import { el, isCoarsePointer } from "./utils.js";
 
+// A press must be held this long before it counts as "peeking" rather
+// than tapping, and a tap may wander this far before it stops counting
+// as a tap.
+const PEEK_HOLD_MS = 350;
+const MOVE_SLOP_PX = 12;
+
 function playIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -18,29 +24,24 @@ function badgeFor(burst) {
 }
 
 /**
- * Render the burst grid. On fine-pointer (mouse) devices the animated
- * preview plays on hover; on coarse-pointer (touch) devices it autoplays
- * whenever the tile is in the viewport, since there is no hover there.
+ * Render the burst grid.
+ *
+ * The animated preview plays on hover with a mouse. On touch there is no
+ * hover, so it follows the finger instead: exactly the tile currently
+ * under the finger animates, dragging sideways moves the preview from
+ * tile to tile, and lifting stops it. Only ever one preview runs at a
+ * time, so a phone isn't decoding a screenful of animations at once.
+ *
+ * A quick tap still opens the burst; anything longer is a peek and is
+ * prevented from opening it. Vertical movement means the page is being
+ * scrolled, so the peek is abandoned and the scroll left alone.
  */
 export function renderBurstGrid(container, bursts, { onOpen }) {
   const coarse = isCoarsePointer();
-  const observer = coarse
-    ? new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            const tile = entry.target;
-            if (entry.isIntersecting) tile._loadPreview?.();
-            else tile._unloadPreview?.();
-          }
-        },
-        { rootMargin: "100px" }
-      )
-    : null;
 
   bursts.forEach((burst, index) => {
     const frame = burst.frames[burst.coverIndex];
     const cover = el("img", { class: "cover", src: frame.thumb, loading: "lazy", alt: "" });
-    const children = [cover, badgeFor(burst)];
 
     const tile = el(
       "button",
@@ -50,37 +51,123 @@ export function renderBurstGrid(container, bursts, { onOpen }) {
         style: `--tile-w:${burst.thumbW};--tile-h:${burst.thumbH}`,
         onClick: () => onOpen(index, 0),
       },
-      children
+      [cover, badgeFor(burst)]
     );
 
     if (burst.preview) {
-      const preview = el("img", { class: "preview", loading: "lazy", alt: "" });
+      const preview = el("img", { class: "preview", alt: "" });
       preview.style.display = "none";
       tile.append(preview);
 
-      const load = () => {
+      tile._loadPreview = () => {
         if (!preview.getAttribute("src")) preview.src = burst.preview;
         preview.style.display = "";
         cover.style.display = "none";
       };
-      const unload = () => {
+      tile._unloadPreview = () => {
         preview.style.display = "none";
         cover.style.display = "";
+        preview.removeAttribute("src");
       };
 
-      if (coarse) {
-        tile._loadPreview = load;
-        tile._unloadPreview = unload;
-        observer.observe(tile);
-      } else {
-        tile.addEventListener("mouseenter", load);
-        tile.addEventListener("mouseleave", () => {
-          unload();
-          preview.removeAttribute("src");
-        });
+      if (!coarse) {
+        tile.addEventListener("mouseenter", () => tile._loadPreview());
+        tile.addEventListener("mouseleave", () => tile._unloadPreview());
       }
     }
 
     container.append(tile);
   });
+
+  if (!coarse) return;
+
+  let peeking = null;
+  let startX = 0;
+  let startY = 0;
+  let startedAt = 0;
+  let abandoned = false;
+  let suppressClick = false;
+
+  const tileAt = (x, y) => document.elementFromPoint(x, y)?.closest(".burst-tile") || null;
+
+  function peek(tile) {
+    if (tile === peeking) return;
+    peeking?._unloadPreview?.();
+    peeking = tile;
+    peeking?._loadPreview?.();
+  }
+
+  container.addEventListener(
+    "touchstart",
+    (event) => {
+      suppressClick = false;
+      abandoned = event.touches.length !== 1;
+      if (abandoned) {
+        peek(null);
+        return;
+      }
+      const touch = event.touches[0];
+      startX = touch.clientX;
+      startY = touch.clientY;
+      startedAt = performance.now();
+      peek(tileAt(startX, startY));
+    },
+    { passive: true }
+  );
+
+  container.addEventListener(
+    "touchmove",
+    (event) => {
+      if (abandoned || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+
+      // Vertical wins => the user is scrolling the grid, not peeking.
+      if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > MOVE_SLOP_PX) {
+        abandoned = true;
+        suppressClick = true;
+        peek(null);
+        return;
+      }
+      if (Math.abs(dx) > MOVE_SLOP_PX) {
+        suppressClick = true;
+        peek(tileAt(touch.clientX, touch.clientY));
+      }
+    },
+    { passive: true }
+  );
+
+  function endPeek() {
+    if (!abandoned && performance.now() - startedAt >= PEEK_HOLD_MS) suppressClick = true;
+    peek(null);
+    abandoned = false;
+  }
+
+  container.addEventListener("touchend", endPeek, { passive: true });
+  container.addEventListener(
+    "touchcancel",
+    () => {
+      suppressClick = true;
+      endPeek();
+    },
+    { passive: true }
+  );
+
+  // Swallow the click a peek would otherwise produce. Every touchstart
+  // clears the flag, so an ordinary tap afterwards still opens the burst.
+  container.addEventListener(
+    "click",
+    (event) => {
+      if (!suppressClick) return;
+      suppressClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    true
+  );
+
+  // Holding a finger on an image otherwise raises the "save image" sheet
+  // or a selection callout, which would interrupt the peek.
+  container.addEventListener("contextmenu", (event) => event.preventDefault());
 }

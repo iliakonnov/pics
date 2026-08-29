@@ -63,16 +63,56 @@ def shot(page, name):
 
 def touch(page, selector, kind, x, y):
     """Dispatch a single-finger TouchEvent at viewport coords (x, y)."""
+    touch_multi(page, selector, kind, [[x, y]])
+
+
+def touch_multi(page, selector, kind, points):
+    """Dispatch a TouchEvent with one Touch per (x, y) in points."""
     page.evaluate(
-        """([selector, kind, x, y]) => {
+        """([selector, kind, points]) => {
             const el = document.querySelector(selector);
-            const t = new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
+            const touches = points.map((p, i) => new Touch({
+                identifier: i, target: el, clientX: p[0], clientY: p[1],
+            }));
+            const live = kind === 'touchend' ? [] : touches;
             el.dispatchEvent(new TouchEvent(kind, {
-                touches: kind === 'touchend' ? [] : [t],
-                changedTouches: [t], bubbles: true, cancelable: true,
+                touches: live, targetTouches: live, changedTouches: touches,
+                bubbles: true, cancelable: true,
             }));
         }""",
-        [selector, kind, x, y],
+        [selector, kind, points],
+    )
+
+
+def stage_scale(page) -> float:
+    """Current zoom factor read back off the rendered transform matrix."""
+    return page.eval_on_selector(
+        "#viewer-media img",
+        "el => new DOMMatrixReadOnly(getComputedStyle(el).transform).a",
+    )
+
+
+def stage_translate(page) -> tuple[float, float]:
+    return tuple(
+        page.eval_on_selector(
+            "#viewer-media img",
+            "el => { const m = new DOMMatrixReadOnly(getComputedStyle(el).transform); return [m.e, m.f]; }",
+        )
+    )
+
+
+def tile_center(page, index: int):
+    box = page.query_selector_all(".burst-tile")[index].bounding_box()
+    return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+
+def preview_running(page, index: int) -> bool:
+    return page.evaluate(
+        """(i) => {
+            const p = document.querySelectorAll('.burst-tile')[i].querySelector('.preview');
+            return !!p && p.style.display !== 'none' && !!p.getAttribute('src');
+        }""",
+        index,
     )
 
 
@@ -103,7 +143,7 @@ def desktop_tests(browser):
 
     page.click(".album-card")
     page.wait_for_selector(".burst-tile")
-    check("three burst tiles", len(page.query_selector_all(".burst-tile")) == 3)
+    check("four burst tiles", len(page.query_selector_all(".burst-tile")) == 4)
     shot(page, "02-album-grid")
 
     page.query_selector_all(".burst-tile")[0].hover()
@@ -137,6 +177,11 @@ def desktop_tests(browser):
     page.keyboard.press("ArrowRight")
     page.wait_for_timeout(250)
     check("ArrowRight -> next burst", page.evaluate("location.hash") == "#b0001:0")
+    check("filmstrip shown for the 3-frame burst", page.eval_on_selector("#filmstrip", "el => !el.hidden"))
+
+    page.keyboard.press("ArrowRight")
+    page.wait_for_timeout(250)
+    check("ArrowRight -> single-photo burst", page.evaluate("location.hash") == "#b0002:0")
     check("filmstrip hidden for single frame", page.eval_on_selector("#filmstrip", "el => el.hidden"))
     shot(page, "06-viewer-single-burst")
 
@@ -152,7 +197,7 @@ def desktop_tests(browser):
     shot(page, "08-viewer-closed")
 
     # Same-page hash change (someone pastes a shared link into the bar).
-    page.evaluate("location.hash = '#b0002:0'")
+    page.evaluate("location.hash = '#b0003:0'")
     page.wait_for_timeout(300)
     check("same-page hash change opens that burst", page.eval_on_selector("#viewer", "el => !el.hidden"))
     page.close()
@@ -160,7 +205,7 @@ def desktop_tests(browser):
     # A shared deep link arriving as a cold page load.
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     watch(page, "deeplink")
-    page.goto(f"{ALBUM}#b0002:0")
+    page.goto(f"{ALBUM}#b0003:0")
     page.wait_for_selector("#viewer:not([hidden])")
     check("cold deep link opens video burst", page.eval_on_selector("#viewer-media", "el => !!el.querySelector('video')"))
     page.go_back()
@@ -181,11 +226,40 @@ def shuttle_tests(browser):
     page.click(".album-card")
     page.wait_for_selector(".burst-tile")
     page.wait_for_timeout(300)
-    check(
-        "touch autoplays preview in viewport",
-        page.eval_on_selector(".burst-tile .preview", "el => el && el.style.display !== 'none'"),
-    )
-    shot(page, "11-mobile-grid")
+
+    # Nothing animates until a finger is actually on a tile.
+    check("no preview runs untouched", not preview_running(page, 0))
+
+    tx0, ty0 = tile_center(page, 0)
+    touch(page, "#burst-grid", "touchstart", tx0, ty0)
+    page.wait_for_timeout(120)
+    check("finger down starts that tile's preview", preview_running(page, 0))
+    shot(page, "11-mobile-peek")
+
+    # Dragging sideways hands the preview to the tile now under the finger.
+    tx1, ty1 = tile_center(page, 1)
+    touch(page, "#burst-grid", "touchmove", tx1, ty1)
+    page.wait_for_timeout(120)
+    check("preview follows finger to next tile", preview_running(page, 1) and not preview_running(page, 0))
+
+    touch(page, "#burst-grid", "touchend", tx1, ty1)
+    page.wait_for_timeout(120)
+    check("lifting stops all previews", not preview_running(page, 0) and not preview_running(page, 1))
+
+    # A long press peeks; it must not also open the burst.
+    touch(page, "#burst-grid", "touchstart", tx0, ty0)
+    page.wait_for_timeout(500)
+    touch(page, "#burst-grid", "touchend", tx0, ty0)
+    page.query_selector_all(".burst-tile")[0].click()  # the click a real long-press would emit
+    page.wait_for_timeout(200)
+    check("long press does not open the viewer", page.eval_on_selector("#viewer", "el => el.hidden"))
+
+    # ...but a quick tap still does.
+    page.query_selector_all(".burst-tile")[0].tap()
+    page.wait_for_timeout(300)
+    check("quick tap opens the viewer", page.eval_on_selector("#viewer", "el => !el.hidden"))
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(250)
 
     open_burst_a(page, mobile=True)
     check("starts at frame 0", active_frame(page) == 0)
@@ -272,10 +346,111 @@ def shuttle_tests(browser):
     page.close()
 
 
+def zoom_tests(browser):
+    print("mobile: pinch / double-tap zoom, pan, and swipe coexistence")
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+    watch(page, "zoom")
+    open_burst_a(page, mobile=True)
+
+    check("starts unzoomed", stage_scale(page) == 1)
+
+    # Double-tap zooms in around the tapped point; again zooms back out.
+    for kind in ("touchstart", "touchend"):
+        touch(page, "#viewer-stage", kind, 195, 420)
+    page.wait_for_timeout(60)
+    for kind in ("touchstart", "touchend"):
+        touch(page, "#viewer-stage", kind, 195, 420)
+    page.wait_for_timeout(350)
+    zoomed = stage_scale(page)
+    check("double-tap zooms in", zoomed > 1.5, f"scale={zoomed:.2f}")
+    shot(page, "17-mobile-zoomed")
+
+    # While zoomed, a horizontal drag pans instead of changing burst.
+    before_hash = page.evaluate("location.hash")
+    touch(page, "#viewer-stage", "touchstart", 300, 420)
+    touch(page, "#viewer-stage", "touchmove", 180, 420)
+    touch(page, "#viewer-stage", "touchend", 180, 420)
+    page.wait_for_timeout(200)
+    panned_x, _ = stage_translate(page)
+    check("drag while zoomed pans the photo", abs(panned_x) > 1, f"tx={panned_x:.1f}")
+    check("drag while zoomed does not change burst", page.evaluate("location.hash") == before_hash)
+    shot(page, "18-mobile-zoom-panned")
+
+    for kind in ("touchstart", "touchend"):
+        touch(page, "#viewer-stage", kind, 195, 420)
+    page.wait_for_timeout(60)
+    for kind in ("touchstart", "touchend"):
+        touch(page, "#viewer-stage", kind, 195, 420)
+    page.wait_for_timeout(350)
+    check("double-tap again resets zoom", stage_scale(page) == 1, f"scale={stage_scale(page):.2f}")
+
+    # Back at 1x the horizontal swipe navigates bursts again.
+    touch(page, "#viewer-stage", "touchstart", 300, 420)
+    touch(page, "#viewer-stage", "touchend", 50, 420)
+    page.wait_for_timeout(250)
+    check("swipe works again once unzoomed", page.evaluate("location.hash") == "#b0001:0",
+          page.evaluate("location.hash"))
+
+    # Pinch out with two fingers.
+    page.evaluate("location.hash = '#b0000:0'")
+    page.wait_for_timeout(300)
+    touch_multi(page, "#viewer-stage", "touchstart", [[170, 400], [220, 440]])
+    touch_multi(page, "#viewer-stage", "touchmove", [[100, 330], [290, 510]])
+    page.wait_for_timeout(120)
+    pinched = stage_scale(page)
+    touch_multi(page, "#viewer-stage", "touchend", [[100, 330], [290, 510]])
+    page.wait_for_timeout(250)
+    check("pinch out zooms in", pinched > 1.5, f"scale={pinched:.2f}")
+    shot(page, "19-mobile-pinch")
+
+    # Pinch back in below the threshold snaps to exactly 1x.
+    touch_multi(page, "#viewer-stage", "touchstart", [[100, 330], [290, 510]])
+    touch_multi(page, "#viewer-stage", "touchmove", [[192, 418], [198, 422]])
+    touch_multi(page, "#viewer-stage", "touchend", [[192, 418], [198, 422]])
+    page.wait_for_timeout(300)
+    check("pinch in snaps back to 1x", stage_scale(page) == 1, f"scale={stage_scale(page):.2f}")
+
+    # Changing frame always drops zoom.
+    for kind in ("touchstart", "touchend"):
+        touch(page, "#viewer-stage", kind, 195, 420)
+    page.wait_for_timeout(60)
+    for kind in ("touchstart", "touchend"):
+        touch(page, "#viewer-stage", kind, 195, 420)
+    page.wait_for_timeout(300)
+    check("zoomed before frame change", stage_scale(page) > 1.5)
+    page.query_selector_all(".filmstrip-thumb")[3].tap()
+    page.wait_for_timeout(300)
+    check("changing frame resets zoom", stage_scale(page) == 1, f"scale={stage_scale(page):.2f}")
+    page.close()
+
+
+def video_swipe_test(browser):
+    print("mobile: swipe on a video burst (outside the player)")
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+    watch(page, "videoswipe")
+    page.goto(f"{ALBUM}#b0003:0")
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(300)
+    check("on the video burst", page.eval_on_selector("#viewer-media", "el => !!el.querySelector('video')"))
+
+    box = page.eval_on_selector(
+        "#viewer-media video", "el => { const r = el.getBoundingClientRect(); return [r.top, r.bottom]; }"
+    )
+    above = max(int(box[0]) - 40, 90)  # empty stage area above the player
+    touch(page, "#viewer-stage", "touchstart", 80, above)
+    touch(page, "#viewer-stage", "touchend", 330, above)
+    page.wait_for_timeout(250)
+    check("swipe beside the player changes burst", page.evaluate("location.hash") == "#b0002:0",
+          page.evaluate("location.hash"))
+    page.close()
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=CHROMIUM, headless=True)
     desktop_tests(browser)
     shuttle_tests(browser)
+    zoom_tests(browser)
+    video_swipe_test(browser)
     browser.close()
 
 print()

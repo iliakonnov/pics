@@ -134,16 +134,28 @@ interrupted import instead of creating a new one.
 Plain ES modules, no bundler. `web/index.html` lists albums from
 `/albums.json`; `web/album.html` is uploaded as `albums/<id>/index.html` for
 every album and reads `./album.json` relative to itself. Gallery tiles show
-their animated WebP preview on hover (mouse) or automatically when scrolled
-into view (touch, since there's no hover there).
+their animated WebP preview on hover with a mouse. Touch has no hover, so
+there the preview follows the finger: hold a tile to peek at its
+animation, slide sideways to hand the preview to the next tile, lift to
+stop. Only one preview ever runs at a time, so a phone is never decoding
+a screenful of animations at once. A quick tap still opens the burst;
+anything longer counts as a peek and deliberately does not open it, and
+the long-press "save image" sheet is suppressed so it can't interrupt.
 
 Fullscreen viewer controls:
 
-| | frames within a burst | between bursts | close |
-|---|---|---|---|
-| keyboard | Up / Down | Left / Right | Escape |
-| mouse | wheel; scroll the filmstrip | side arrows | close button |
-| touch | **drag the filmstrip** (speed control) or tap a thumbnail | horizontal swipe on the image | swipe down |
+| | frames within a burst | between bursts | zoom | close |
+|---|---|---|---|---|
+| keyboard | Up / Down | Left / Right | — | Escape |
+| mouse | wheel; scroll the filmstrip | side arrows | double-click, then drag to pan | close button |
+| touch | **drag the filmstrip** (speed control) or tap a thumbnail | horizontal swipe on the image | pinch or double-tap, then drag to pan | swipe down |
+
+Zoom goes up to 6x and anchors on the point being pinched or tapped, so
+the detail under your fingers stays put. While zoomed, a drag pans the
+photo rather than changing burst — the two gestures never fight, and you
+leave a zoomed photo by pinching back in or double-tapping. Pinching
+almost all the way back snaps cleanly to 1x, and changing frame or burst
+always drops the zoom.
 
 The touch filmstrip is a **shuttle/jog control, not a scrollbar**: the
 finger's horizontal displacement from where it landed sets the *speed* of
@@ -174,10 +186,12 @@ python3 -m venv /tmp/pw-venv && /tmp/pw-venv/bin/pip install playwright
 /tmp/pw-venv/bin/python tools/ui_test.py          # drives the system chromium
 ```
 
-It exercises hover/touch previews, keyboard/wheel navigation, the touch
-shuttle (speed ramp, deadzone, wrapping, stop-on-release, tap-to-select),
-burst swipes and deep-link + Back, asserting on real DOM state and writing
-screenshots to `/tmp/pics-screens`. All checks currently pass. It has *not*
+It exercises hover and finger-following previews, keyboard/wheel
+navigation, the touch shuttle (speed ramp, deadzone, wrapping,
+stop-on-release, tap-to-select), pinch/double-tap zoom and panning, burst
+swipes (including beside a video player) and deep-link + Back, asserting
+on real DOM state and writing screenshots to `/tmp/pics-screens`. All 52
+checks currently pass. It has *not*
 been run on physical phone hardware — Chromium's touch emulation is a good
 proxy but not identical, so give the shuttle a try on a real device before
 relying on it.
@@ -186,8 +200,6 @@ relying on it.
 
 - Sony MakerNotes tag names for burst-sequence detection are unverified (see
   above) — check against a real card.
-- No pinch-zoom/pan in the fullscreen viewer; "download original" is the
-  escape hatch for inspecting full detail.
 - No per-photo/per-burst editing (hide, delete, reorder, retitle) — the
   pipeline is import-only today.
 - `setup-bucket`'s printed website endpoint URL is a best guess

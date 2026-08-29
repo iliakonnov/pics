@@ -85,12 +85,40 @@ def build(site: Path) -> None:
         }
     )
 
+    # A second multi-frame burst, so "the preview follows the finger from
+    # tile to tile" is actually testable.
+    frames_d = []
+    for i in range(1, 4):
+        hue = (200 + i * 25) % 360
+        solid(album / "thumb" / f"burstD{i}.jpg", 480, 300, hue, f"D#{i}", 60)
+        solid(album / "display" / f"burstD{i}.jpg", 1600, 1000, hue, f"Burst D #{i}", 130)
+        shutil.copy(album / "display" / f"burstD{i}.jpg", album / "originals" / f"burstD{i}.jpg")
+        frames_d.append(
+            {
+                "hash": f"burstD{i}",
+                "thumb": f"thumb/burstD{i}.jpg",
+                "display": f"display/burstD{i}.jpg",
+                "original": f"originals/burstD{i}.jpg",
+                "video": None,
+                "w": 5472, "h": 3420, "bytes": 8_100_000 + i,
+                "exif": {"camera": "SONY ZV-1", "exposureTime": "1/400", "fNumber": 3.5, "iso": 160},
+            }
+        )
+    shutil.copy(album / "thumb" / "burstD2.jpg", album / "burstD-preview.jpg")
+    bursts.append(
+        {
+            "id": "b0001", "type": "photo", "capturedAt": "2026-08-29T14:02:00",
+            "count": len(frames_d), "coverIndex": 0, "thumbW": 480, "thumbH": 300,
+            "preview": "burstD-preview.jpg", "frames": frames_d,
+        }
+    )
+
     solid(album / "thumb" / "singleB.jpg", 480, 360, 200, "Single B", 44)
     solid(album / "display" / "singleB.jpg", 1600, 1200, 200, "Single B", 110)
     shutil.copy(album / "display" / "singleB.jpg", album / "originals" / "singleB.jpg")
     bursts.append(
         {
-            "id": "b0001", "type": "photo", "capturedAt": "2026-08-29T14:05:00",
+            "id": "b0002", "type": "photo", "capturedAt": "2026-08-29T14:05:00",
             "count": 1, "coverIndex": 0, "thumbW": 480, "thumbH": 360, "preview": None,
             "frames": [
                 {
@@ -116,7 +144,7 @@ def build(site: Path) -> None:
     shutil.copy(album / "video" / "videoC.mp4", album / "originals" / "videoC.mp4")
     bursts.append(
         {
-            "id": "b0002", "type": "video", "capturedAt": "2026-08-29T14:10:00",
+            "id": "b0003", "type": "video", "capturedAt": "2026-08-29T14:10:00",
             "count": 1, "coverIndex": 0, "thumbW": 480, "thumbH": 270, "preview": None,
             "frames": [
                 {
