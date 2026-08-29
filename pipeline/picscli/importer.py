@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import string
 import shutil
 import tempfile
 import threading
@@ -64,14 +65,18 @@ def _default_log(msg: str) -> None:
     print(msg)
 
 
+ALBUM_ID_LENGTH = 10
+
+
 def make_album_id(_first_item: MediaMeta | None = None) -> str:
     """An unguessable directory name.
 
     The album id *is* the secret: it becomes the published directory and
     the link handed to friends, so it must not encode the date or anything
-    else about the contents. ~96 bits of randomness.
+    else about the contents. Letters only, so the link stays easy to read
+    out and retype; 52**10 is about 57 bits, far past guessing.
     """
-    return secrets.token_urlsafe(12)
+    return "".join(secrets.choice(string.ascii_letters) for _ in range(ALBUM_ID_LENGTH))
 
 
 def _process_photo_frame(item: MediaMeta, album_dir: Path) -> album_mod.Frame:

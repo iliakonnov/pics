@@ -99,9 +99,13 @@ album.json unconditionally (they're mutable) and skips media that already
 exists remotely — media is named by content hash, so an existing key is
 always identical content.
 
-The album id is the secret: ~96 bits from `secrets.token_urlsafe`, used as
-both the directory name and the share link, so it encodes nothing about the
-date or contents. Pass `--album-id` to choose your own.
+The album id is the secret: ten random letters (~57 bits), used as both the
+directory name and the share link, so it encodes nothing about the date or
+contents and stays easy to read out. Pass `--album-id` to choose your own.
+
+Uploads run in parallel too (`-j`, default two per core): an album is
+thousands of small files, where one round trip at a time is dominated by
+latency rather than bandwidth.
 
 Re-running `pics import` with the *same* `--album-id` resumes or repairs an
 interrupted run rather than starting a new album; existing derivatives are
@@ -127,7 +131,10 @@ again later into a fresh album.
   So a burst continues only on a strict +1 step, which correctly splits
   two bursts fired 0.5s apart — something a time gap alone cannot do.
 
-- **Conversion** (`picscli/imaging.py`), run across all cores: originals are
+- **Conversion** (`picscli/imaging.py`), run across all cores — each
+  subprocess is pinned to a single thread (`MAGICK_THREAD_LIMIT`), so the
+  worker pool is the only source of parallelism rather than fighting
+  ImageMagick's own: originals are
   losslessly re-encoded to progressive JPEG (`jpegtran`, full EXIF kept,
   pixels unchanged); a ~2560px "display" JPEG, a ~1280px "medium" copy and a
   ~480px thumbnail are generated

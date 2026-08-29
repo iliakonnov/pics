@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -95,44 +98,81 @@ def _put_file(client, bucket: str, key: str, path: Path, *, immutable: bool) -> 
     )
 
 
-def sync_album(client, settings: config.Settings, album_id: str, web_root: Path, *, force: bool = False) -> SyncStats:
-    """Upload everything the album needs under the key prefix `album_id/`."""
+def sync_album(
+    client,
+    settings: config.Settings,
+    album_id: str,
+    web_root: Path,
+    *,
+    force: bool = False,
+    jobs: int | None = None,
+    log=lambda _msg: None,
+) -> SyncStats:
+    """Upload everything the album needs under the key prefix `album_id/`.
+
+    Transfers run in parallel: an album is thousands of small files, and
+    one round trip at a time is dominated by latency rather than
+    bandwidth. boto3 clients are not thread-safe, so each worker gets its
+    own.
+    """
     stats = SyncStats()
     bucket = settings.s3_bucket
     album_dir = settings.album_dir(album_id)
     if not album_dir.is_dir():
         raise RuntimeError(f"no local album directory for {album_id}: {album_dir}")
 
-    def put(key: str, path: Path, *, immutable: bool) -> None:
-        _put_file(client, bucket, key, path, immutable=immutable)
-        stats.uploaded += 1
-        stats.keys_uploaded.append(key)
-
-    # The page itself, plus its own copy of the app: no shared root.
-    put(f"{album_id}/index.html", web_root / "album.html", immutable=False)
-    for asset in sorted((web_root / "assets").iterdir()):
-        if asset.is_file():
-            put(f"{album_id}/assets/{asset.name}", asset, immutable=False)
-
+    # (key, local path, immutable)
+    jobs = jobs or min(16, (os.cpu_count() or 4) * 2)
+    planned: list[tuple[str, Path, bool]] = [
+        (f"{album_id}/index.html", web_root / "album.html", False),
+        *[
+            (f"{album_id}/assets/{a.name}", a, False)
+            for a in sorted((web_root / "assets").iterdir())
+            if a.is_file()
+        ],
+    ]
     for path in sorted(album_dir.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(album_dir)
-        key = f"{album_id}/{rel.as_posix()}"
+        planned.append((f"{album_id}/{rel.as_posix()}", path, rel.parts[0] in _IMMUTABLE_DIRS))
 
-        if rel.parts[0] in _IMMUTABLE_DIRS:
-            if not force and object_exists(client, bucket, key):
-                stats.skipped += 1
-                continue
-            put(key, path, immutable=True)
+    local = threading.local()
+    lock = threading.Lock()
+    done = 0
+    total = len(planned)
+    step = max(1, total // 20)
+
+    def worker(job):
+        nonlocal done
+        key, path, immutable = job
+        if not hasattr(local, "client"):
+            local.client = get_client(settings)
+        skipped = False
+        if immutable and not force and object_exists(local.client, bucket, key):
+            skipped = True
         else:
-            put(key, path, immutable=False)  # album.json
+            _put_file(local.client, bucket, key, path, immutable=immutable)
+        with lock:
+            done += 1
+            if done == total or done % step == 0:
+                log(f"  uploaded {done}/{total}")
+        return key, skipped
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for future in as_completed([pool.submit(worker, job) for job in planned]):
+            key, skipped = future.result()
+            if skipped:
+                stats.skipped += 1
+            else:
+                stats.uploaded += 1
+                stats.keys_uploaded.append(key)
 
     return stats
 
 
 def album_url(settings: config.Settings, album_id: str) -> str:
-    return f"http://{settings.s3_bucket}.website.yandexcloud.net/{album_id}/"
+    return f"https://{settings.s3_bucket}.website.yandexcloud.net/{album_id}/"
 
 
 BUCKET_POLICY_TEMPLATE = {
@@ -167,4 +207,4 @@ def setup_bucket(client, bucket: str) -> str:
             "ErrorDocument": {"Key": "index.html"},
         },
     )
-    return f"http://{bucket}.website.yandexcloud.net"
+    return f"https://{bucket}.website.yandexcloud.net"

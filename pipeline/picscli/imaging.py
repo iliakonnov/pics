@@ -7,14 +7,25 @@ select_preview_frames) are kept separate so they stay unit-testable.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 from . import config
 
+# The importer already runs one conversion per core. ImageMagick and
+# ffmpeg would each fan out internally on top of that, oversubscribing the
+# CPU and losing time to contention, so hold each subprocess to one thread
+# and let the pool be the only source of parallelism.
+_SINGLE_THREADED = {
+    **os.environ,
+    "MAGICK_THREAD_LIMIT": "1",
+    "OMP_NUM_THREADS": "1",
+}
+
 
 def _run(cmd: list[str]) -> None:
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=_SINGLE_THREADED)
     if result.returncode != 0:
         raise RuntimeError(f"command failed ({result.returncode}): {' '.join(cmd)}\n{result.stderr.strip()}")
 
@@ -211,6 +222,8 @@ def transcode_video(
         [
             config.FFMPEG_BIN,
             "-y",
+            "-threads",
+            "2",
             "-i",
             str(src),
             "-vf",

@@ -98,15 +98,20 @@ def list_cmd(library: str | None) -> None:
 @click.option("--album", "album_id", default=None, help="Album id to publish (default: the only local album)")
 @click.option("--web", "web_root_opt", default=None, help="Path to the web/ app root (default: repo's web/ dir)")
 @click.option("--force", is_flag=True, help="Re-upload media even if already present remotely")
+@click.option("-j", "--jobs", default=None, type=int, help="Parallel transfers (default: 2 per core, max 16)")
 @library_option
-def upload_cmd(album_id: str | None, web_root_opt: str | None, force: bool, library: str | None) -> None:
+def upload_cmd(
+    album_id: str | None, web_root_opt: str | None, force: bool, jobs: int | None, library: str | None
+) -> None:
     """Publish one album as a self-contained directory and print its link."""
     settings = _settings(library)
     resolved = _resolve_album(settings, album_id)
     web_root = _web_root(web_root_opt)
     client = upload.get_client(settings)
 
-    stats = upload.sync_album(client, settings, resolved, web_root, force=force)
+    stats = upload.sync_album(
+        client, settings, resolved, web_root, force=force, jobs=jobs, log=click.echo
+    )
     click.echo(f"{resolved}: {stats.uploaded} uploaded, {stats.skipped} already present")
     click.echo("\nShare this link:")
     click.echo("  " + upload.album_url(settings, resolved))
