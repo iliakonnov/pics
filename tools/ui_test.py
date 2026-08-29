@@ -257,21 +257,44 @@ def shuttle_tests(browser):
     # Nothing animates until a finger is actually on a tile.
     check("no preview runs untouched", not preview_running(page, 0))
 
-    tx0, ty0 = tile_center(page, 0)
+    # Pick two tiles sharing a row, so the drag between them is sideways:
+    # a vertical drag means "scrolling" and correctly cancels the peek.
+    pair = page.evaluate(
+        """() => {
+            for (const row of document.querySelectorAll('.burst-row')) {
+                const tiles = [...row.children];
+                for (let i = 0; i < tiles.length - 1; i++) {
+                    if (!tiles[i].querySelector('.preview')) continue;
+                    const all = [...document.querySelectorAll('.burst-tile')];
+                    return {
+                        from: all.indexOf(tiles[i]),
+                        to: all.indexOf(tiles[i + 1]),
+                        toHasPreview: !!tiles[i + 1].querySelector('.preview'),
+                    };
+                }
+            }
+            return null;
+        }"""
+    )
+    check("found two tiles in one row to drag between", pair is not None, str(pair))
+
+    tx0, ty0 = tile_center(page, pair["from"])
     touch(page, "#burst-grid", "touchstart", tx0, ty0)
     page.wait_for_timeout(120)
-    check("finger down starts that tile's preview", preview_running(page, 0))
+    check("finger down starts that tile's preview", preview_running(page, pair["from"]))
     shot(page, "11-mobile-peek")
 
     # Dragging sideways hands the preview to the tile now under the finger.
-    tx1, ty1 = tile_center(page, 1)
+    tx1, ty1 = tile_center(page, pair["to"])
     touch(page, "#burst-grid", "touchmove", tx1, ty1)
-    page.wait_for_timeout(120)
-    check("preview follows finger to next tile", preview_running(page, 1) and not preview_running(page, 0))
+    page.wait_for_timeout(150)
+    check("preview leaves the tile the finger left", not preview_running(page, pair["from"]))
+    if pair["toHasPreview"]:
+        check("preview follows the finger to the next tile", preview_running(page, pair["to"]))
 
     touch(page, "#burst-grid", "touchend", tx1, ty1)
     page.wait_for_timeout(120)
-    check("lifting stops all previews", not preview_running(page, 0) and not preview_running(page, 1))
+    check("lifting stops all previews", not preview_running(page, pair["from"]))
 
     # A long press peeks; it must not also open the burst.
     touch(page, "#burst-grid", "touchstart", tx0, ty0)
@@ -535,6 +558,47 @@ def portrait_fit_test(browser):
     page.close()
 
 
+ROW_PROBE = """() => {
+    const g = document.getElementById('burst-grid');
+    const rows = [...g.querySelectorAll('.burst-row')];
+    const full = rows.slice(0, -1);          // the last row is not stretched
+    const width = g.clientWidth;
+    return {
+        rows: rows.length,
+        stray: [...g.children].filter(c => !c.classList.contains('burst-row')).length,
+        fills: full.map(r => {
+            const cs = [...r.children];
+            const l = Math.min(...cs.map(c => c.getBoundingClientRect().left));
+            const rt = Math.max(...cs.map(c => c.getBoundingClientRect().right));
+            return (rt - l) / width;
+        }),
+        equalHeights: full.every(r => {
+            const hs = [...r.children].map(c => Math.round(c.getBoundingClientRect().height));
+            return Math.max(...hs) - Math.min(...hs) <= 1;
+        }),
+    };
+}"""
+
+
+def justified_grid_test(browser):
+    print("grid: rows are filled edge to edge at any width")
+    for width, height in [(390, 844), (768, 1024), (1400, 950)]:
+        page = browser.new_page(viewport={"width": width, "height": height})
+        watch(page, f"grid-{width}")
+        page.goto(ALBUM)
+        page.wait_for_selector(".burst-tile")
+        page.wait_for_timeout(600)
+        r = page.evaluate(ROW_PROBE)
+        check(f"{width}px: tiles live in rows, nothing loose", r["stray"] == 0, str(r["stray"]))
+        check(
+            f"{width}px: every full row spans the width",
+            all(abs(f - 1) < 0.005 for f in r["fills"]),
+            f"fills={[round(f, 3) for f in r['fills']]}",
+        )
+        check(f"{width}px: one height per row", r["equalHeights"])
+        page.close()
+
+
 def lazy_loading_test(browser):
     print("loading: pictures are fetched when needed, not all at once")
     page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
@@ -677,6 +741,7 @@ def video_swipe_test(browser):
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=CHROMIUM, headless=True)
     desktop_tests(browser)
+    justified_grid_test(browser)
     shuttle_tests(browser)
     zoom_tests(browser)
     shuttle_hint_test(browser)

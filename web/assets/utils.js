@@ -64,50 +64,75 @@ export const isCoarsePointer = () =>
   window.matchMedia && window.matchMedia("(hover: none), (pointer: coarse)").matches;
 
 /**
- * Lay tiles out in justified rows, the way photo galleries do: every row
- * is filled edge to edge and each tile keeps its own aspect ratio.
+ * Lay tiles out in justified rows: fill each row with as many pictures as
+ * fit at no less than `minHeight`, then scale the row up so it spans the
+ * full width. Every picture keeps its own aspect ratio, and every picture
+ * in a row shares one height.
  *
- * A plain CSS grid can't do this — with mixed portrait and landscape
- * shots, one tall frame stretches its whole row and the landscape tiles
- * beside it leave a band of empty space.
+ * Pure CSS cannot do this. The usual `flex-grow: <aspect>` trick fills the
+ * width but leaves rows at inconsistent heights and needs a hack for the
+ * last row, because CSS has no way to solve "scale this set of aspect
+ * ratios to exactly this width".
  *
- * `items` is [{ el, aspect }]; sizes are written straight onto the
- * elements, so call it again after a resize.
+ * Rows are real elements rather than flex-wrap: when the browser does the
+ * wrapping it can disagree with the arithmetic — a scrollbar appearing
+ * mid-layout narrows the container, one tile drops to the next line, and
+ * the whole grid shifts out of step. Explicit rows cannot drift, and
+ * flex-shrink absorbs any leftover fraction of a pixel.
+ *
+ * `items` is [{ el, aspect }]; call it again after a resize.
  */
-export function justifyRows(container, items, { gap = 6, targetHeight } = {}) {
+export function justifyRows(container, items, { gap = 6, minHeight } = {}) {
   const width = container.clientWidth;
   if (!width || !items.length) return;
-  const target = targetHeight || (width < 500 ? 130 : 200);
+  const floor = minHeight || (width < 700 ? 120 : 190);
+  // A row that cannot be filled (the last one, or a single panorama)
+  // should not balloon to fill the screen.
+  const ceiling = floor * 2.2;
 
+  const rows = [];
   let row = [];
   let rowAspect = 0;
 
-  const flush = (isLastRow) => {
-    if (!row.length) return;
-    const available = width - gap * (row.length - 1);
-    // A last row with only a couple of frames would balloon if stretched,
-    // so leave it at the target height instead.
-    let height = available / rowAspect;
-    if (isLastRow && height > target * 1.3) height = target;
+  for (const item of items) {
+    const aspect = item.aspect > 0 ? item.aspect : 1.5;
+    if (row.length) {
+      const heightIfAdded = (width - gap * row.length) / (rowAspect + aspect);
+      if (heightIfAdded < floor) {
+        rows.push({ row, rowAspect, full: true });
+        row = [];
+        rowAspect = 0;
+      }
+    }
+    row.push({ ...item, aspect });
+    rowAspect += aspect;
+  }
+  if (row.length) rows.push({ row, rowAspect, full: false });
+
+  rows.forEach(({ row: cells, rowAspect: total, full }, index) => {
+    const available = width - gap * (cells.length - 1);
+    let height = available / total;
+    if (!full) height = Math.min(height, ceiling);
+
+    let rowEl = container.children[index];
+    if (!rowEl || !rowEl.classList.contains("burst-row")) {
+      rowEl = document.createElement("div");
+      rowEl.className = "burst-row";
+      container.append(rowEl);
+    }
 
     let used = 0;
-    row.forEach((item, i) => {
-      const last = i === row.length - 1;
-      const w = !isLastRow && last ? available - used : Math.floor(item.aspect * height);
+    cells.forEach((cell, i) => {
+      const last = i === cells.length - 1;
+      const w = full && last ? available - used : Math.floor(cell.aspect * height);
       used += w;
-      item.el.style.width = `${w}px`;
-      item.el.style.height = `${Math.round(height)}px`;
+      cell.el.style.width = `${w}px`;
+      cell.el.style.height = `${Math.round(height)}px`;
+      rowEl.append(cell.el);
     });
-    row = [];
-    rowAspect = 0;
-  };
+  });
 
-  for (const item of items) {
-    row.push(item);
-    rowAspect += item.aspect;
-    if (rowAspect * target + gap * (row.length - 1) >= width) flush(false);
-  }
-  flush(true);
+  while (container.children.length > rows.length) container.lastElementChild.remove();
 }
 
 export function onResize(handler) {

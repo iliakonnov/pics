@@ -73,7 +73,8 @@ export function renderBurstGrid(container, bursts, { onOpen }) {
       }
     }
 
-    container.append(tile);
+    // Not appended here: justifyRows() owns placement, putting each tile
+    // into the row it belongs to.
   });
 
   const relayout = () => justifyRows(container, layoutItems);

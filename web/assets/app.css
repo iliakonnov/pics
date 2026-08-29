@@ -86,14 +86,19 @@ main {
 
 /* ---- grids shared by albums list & burst grid ---- */
 
-/* Justified rows: widths and heights are written by justifyRows() in JS,
-   because CSS alone cannot fill a row edge-to-edge with mixed portrait
-   and landscape frames. */
+/* Justified rows. Sizes come from justifyRows() in JS — CSS alone cannot
+   scale a set of aspect ratios to exactly fill a width. Each row is its
+   own flex line, so the browser can never wrap differently than the
+   arithmetic expected. */
 .burst-grid {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: var(--gap);
-  align-content: flex-start;
+}
+
+.burst-row {
+  display: flex;
+  gap: var(--gap);
 }
 
 .burst-tile {
