@@ -157,6 +157,34 @@ def build(site: Path) -> None:
         }
     )
 
+    # Portrait burst: its thumbnails are narrower than a phone screen, so
+    # it catches viewer sizing that only ever shrinks an image.
+    frames_p = []
+    for i in range(1, 4):
+        hue = (60 + i * 30) % 360
+        solid(album / "thumb" / f"burstP{i}.jpg", 320, 480, hue, f"P#{i}", 50)
+        solid(album / "display" / f"burstP{i}.jpg", 1200, 1800, hue, f"Burst P #{i}", 120)
+        shutil.copy(album / "display" / f"burstP{i}.jpg", album / "originals" / f"burstP{i}.jpg")
+        frames_p.append(
+            {
+                "hash": f"burstP{i}",
+                "thumb": f"thumb/burstP{i}.jpg",
+                "display": f"display/burstP{i}.jpg",
+                "original": f"originals/burstP{i}.jpg",
+                "video": None,
+                "w": 2592, "h": 3888, "bytes": 8_200_000 + i,
+                "exif": {"camera": "SONY ZV-1", "exposureTime": "1/125", "fNumber": 1.8, "iso": 800},
+            }
+        )
+    shutil.copy(album / "thumb" / "burstP2.jpg", album / "burstP-preview.jpg")
+    bursts.append(
+        {
+            "id": "b0004", "type": "photo", "capturedAt": "2026-08-29T14:15:00",
+            "count": len(frames_p), "coverIndex": 0, "thumbW": 320, "thumbH": 480,
+            "preview": "burstP-preview.jpg", "frames": frames_p,
+        }
+    )
+
     album_doc = {
         "id": ALBUM_ID, "title": "Пляж", "date": "2026-08-29",
         "generatedAt": "2026-08-29T21:45:00", "bursts": bursts,

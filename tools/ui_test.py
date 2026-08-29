@@ -116,6 +116,21 @@ def preview_running(page, index: int) -> bool:
     )
 
 
+FIT_PROBE = """() => {
+    const img = document.querySelector('#viewer-media img');
+    const st = document.getElementById('viewer-stage').getBoundingClientRect();
+    const fit = Math.min(img.offsetWidth / img.naturalWidth, img.offsetHeight / img.naturalHeight);
+    const cw = img.naturalWidth * fit, ch = img.naturalHeight * fit;
+    return {
+        content: [Math.round(cw), Math.round(ch)],
+        stage: [Math.round(st.width), Math.round(st.height)],
+        fits: cw <= st.width + 1 && ch <= st.height + 1,
+        touchesEdge: Math.abs(Math.max(cw / st.width, ch / st.height) - 1) < 0.02,
+        src: img.getAttribute('src').split('/')[0],
+    };
+}"""
+
+
 def active_frame(page) -> int:
     return page.eval_on_selector(
         "#filmstrip", "el => Array.from(el.children).findIndex(c => c.classList.contains('active'))"
@@ -143,7 +158,7 @@ def desktop_tests(browser):
 
     page.click(".album-card")
     page.wait_for_selector(".burst-tile")
-    check("four burst tiles", len(page.query_selector_all(".burst-tile")) == 4)
+    check("five burst tiles", len(page.query_selector_all(".burst-tile")) == 5)
     shot(page, "02-album-grid")
 
     page.query_selector_all(".burst-tile")[0].hover()
@@ -155,25 +170,15 @@ def desktop_tests(browser):
     page.wait_for_selector("#viewer:not([hidden])")
     check("filmstrip shown for multi-frame burst", page.eval_on_selector("#filmstrip", "el => !el.hidden"))
 
-    # The photo must be letterboxed inside the stage, never cropped by it:
-    # .viewer-media needs a definite height or max-height:100% on the image
-    # resolves to nothing and overflow:hidden eats the top and bottom.
-    fit = page.evaluate(
-        """() => {
-            const img = document.querySelector('#viewer-media img');
-            const st = document.getElementById('viewer-stage').getBoundingClientRect();
-            const r = img.getBoundingClientRect();
-            return {
-                fits: r.height <= st.height + 1 && r.width <= st.width + 1,
-                shown: r.width / r.height,
-                natural: img.naturalWidth / img.naturalHeight,
-            };
-        }"""
-    )
+    # The picture must be scaled to fit the stage: not cropped by it (the
+    # <img> used to overflow and get clipped) and not left at its natural
+    # size when it is smaller than the stage (which put black bars on all
+    # four sides during a shuttle). Measures the drawn picture, not the
+    # <img> box, since the element now fills the stage and object-fit
+    # letterboxes inside it.
+    fit = page.evaluate(FIT_PROBE)
     check("photo fits the stage uncropped", fit["fits"], str(fit))
-    check("photo keeps its aspect ratio", abs(fit["shown"] - fit["natural"]) < 0.01, str(fit))
-    check("filmstrip has 6 thumbs", len(page.query_selector_all(".filmstrip-thumb")) == 6)
-    shot(page, "04-viewer-frame0")
+    check("photo is scaled up to touch an edge", fit["touchesEdge"], str(fit))
 
     page.keyboard.press("ArrowDown")
     page.wait_for_timeout(250)
@@ -206,8 +211,12 @@ def desktop_tests(browser):
     page.keyboard.press("ArrowRight")
     page.wait_for_timeout(250)
     check("video burst renders <video>", page.eval_on_selector("#viewer-media", "el => !!el.querySelector('video')"))
-    check("next disabled at last burst", page.eval_on_selector("#viewer-next-burst", "el => el.disabled"))
     shot(page, "07-viewer-video")
+
+    page.keyboard.press("ArrowRight")
+    page.wait_for_timeout(250)
+    check("ArrowRight -> portrait burst", page.evaluate("location.hash") == "#b0004:0")
+    check("next disabled at last burst", page.eval_on_selector("#viewer-next-burst", "el => el.disabled"))
 
     page.keyboard.press("Escape")
     page.wait_for_timeout(250)
@@ -442,6 +451,33 @@ def zoom_tests(browser):
     page.close()
 
 
+def portrait_fit_test(browser):
+    print("mobile: a portrait burst stays scaled to fit, at rest and mid-shuttle")
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+    watch(page, "portrait")
+    page.goto(f"{ALBUM}#b0004:0")
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(600)
+
+    at_rest = page.evaluate(FIT_PROBE)
+    check("portrait fits at rest", at_rest["fits"] and at_rest["touchesEdge"], str(at_rest))
+
+    strip_y = page.eval_on_selector("#filmstrip", "el => el.getBoundingClientRect().top + 30")
+    touch(page, "#filmstrip", "touchstart", 200, strip_y)
+    touch(page, "#filmstrip", "touchmove", 330, strip_y)
+    page.wait_for_timeout(450)
+    during = page.evaluate(FIT_PROBE)
+    touch(page, "#filmstrip", "touchend", 330, strip_y)
+
+    check("shuttle really swapped to the thumbnail", during["src"] == "thumb", str(during))
+    check("portrait thumbnail is scaled up, not left small", during["touchesEdge"], str(during))
+    check("portrait mid-shuttle still fits", during["fits"], str(during))
+    check("size does not jump between thumb and display", during["content"] == at_rest["content"],
+          f"{during['content']} vs {at_rest['content']}")
+    shot(page, "21-mobile-portrait-shuttle")
+    page.close()
+
+
 def video_swipe_test(browser):
     print("mobile: swipe on a video burst (outside the player)")
     page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
@@ -468,6 +504,7 @@ with sync_playwright() as p:
     desktop_tests(browser)
     shuttle_tests(browser)
     zoom_tests(browser)
+    portrait_fit_test(browser)
     video_swipe_test(browser)
     browser.close()
 

@@ -477,6 +477,21 @@ export function initViewer(bursts) {
     img.classList.toggle("zoomed", scale > 1);
   }
 
+  /**
+   * Size of the picture as actually drawn, which is not the size of the
+   * <img> box: the element fills the stage and object-fit letterboxes the
+   * image inside it. Panning must be bounded by the picture, otherwise a
+   * portrait shot could be dragged out into the empty side margins.
+   */
+  function renderedImageSize(img) {
+    const boxW = img.offsetWidth;
+    const boxH = img.offsetHeight;
+    const { naturalWidth: nw, naturalHeight: nh } = img;
+    if (!nw || !nh) return [boxW, boxH];
+    const fit = Math.min(boxW / nw, boxH / nh);
+    return [nw * fit, nh * fit];
+  }
+
   function clampPan() {
     const img = zoomTarget();
     if (!img) {
@@ -484,8 +499,9 @@ export function initViewer(bursts) {
       ty = 0;
       return;
     }
-    const maxX = Math.max(0, (img.offsetWidth * scale - stage.clientWidth) / 2);
-    const maxY = Math.max(0, (img.offsetHeight * scale - stage.clientHeight) / 2);
+    const [shownW, shownH] = renderedImageSize(img);
+    const maxX = Math.max(0, (shownW * scale - stage.clientWidth) / 2);
+    const maxY = Math.max(0, (shownH * scale - stage.clientHeight) / 2);
     tx = clamp(tx, -maxX, maxX);
     ty = clamp(ty, -maxY, maxY);
   }

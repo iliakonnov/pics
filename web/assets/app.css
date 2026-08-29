@@ -254,16 +254,29 @@ main {
 
 .viewer-media img,
 .viewer-media video {
-  max-width: 100%;
-  max-height: 100%;
   object-fit: contain;
   user-select: none;
   -webkit-user-drag: none;
 }
 
+/* Fills the stage and lets object-fit letterbox, so a frame is scaled
+   *up* as well as down. max-width/max-height only ever shrink: during a
+   shuttle the stage shows the 480px thumbnail, which on a phone is
+   smaller than the screen and would otherwise sit at its natural size
+   with black bars on all four sides. */
 .viewer-media img {
+  width: 100%;
+  height: 100%;
   transform-origin: center center;
   touch-action: none;
+}
+
+/* The video keeps sizing to its own content: if it filled the stage,
+   every touch beside the picture would land on the player and swiping
+   between bursts would stop working. */
+.viewer-media video {
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .viewer-media img.zoomed {

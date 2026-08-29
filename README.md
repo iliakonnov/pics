@@ -168,6 +168,11 @@ frame directly, tap its thumbnail. While shuttling, the stage shows the
 (already-loaded) thumbnail so frames can change at full rate without waiting
 on 2560px JPEGs; the sharp image is restored the moment the finger lifts.
 
+The stage scales every frame to fit — both up and down. That matters
+because a shuttle shows the 480px thumbnail, which is smaller than a phone
+screen: sized with `max-width/max-height` alone it would sit at its
+natural size surrounded by black bars.
+
 The current burst+frame is reflected in the URL hash so a link can point at
 a specific frame, and the browser Back button always closes the viewer back
 to the grid in one step.
