@@ -300,6 +300,22 @@ main {
   display: none;
 }
 
+/* On touch the filmstrip is a speed control, not a scroller: the finger's
+   displacement drives playback rate and the strip is scrolled
+   programmatically to keep the active frame centred. Native panning and
+   snapping would fight that, so they're switched off here. */
+@media (hover: none), (pointer: coarse) {
+  .filmstrip {
+    overflow-x: hidden;
+    touch-action: none;
+    scroll-snap-type: none;
+  }
+}
+
+.filmstrip.shuttling .filmstrip-thumb {
+  transition: none;
+}
+
 .filmstrip::-webkit-scrollbar {
   height: 4px;
 }

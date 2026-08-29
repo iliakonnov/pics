@@ -135,21 +135,52 @@ Plain ES modules, no bundler. `web/index.html` lists albums from
 `/albums.json`; `web/album.html` is uploaded as `albums/<id>/index.html` for
 every album and reads `./album.json` relative to itself. Gallery tiles show
 their animated WebP preview on hover (mouse) or automatically when scrolled
-into view (touch, since there's no hover there). The fullscreen viewer
-supports: wheel / Up / Down / scrolling-or-swiping the filmstrip to flip
-through a burst's frames; Left/Right or a horizontal swipe on the main image
-to move between bursts; Escape / swipe-down / the close button to exit. The
-current burst+frame is reflected in the URL hash so a link can point at a
-specific frame, and the browser Back button always closes the viewer back to
-the grid in one step.
+into view (touch, since there's no hover there).
 
-**Not tested in a real browser** — no browser automation was available while
-building this; only `node --check` syntax validation and manual code review
-were done on the JS. Before publishing for real, open a generated album
-locally (`python3 -m http.server` from a folder containing `index.html`,
-`album.html`, `assets/`, `albums.json` and an `albums/<id>/` with real
-`album.json` + images) and click through hover previews, the viewer
-navigation, and touch gestures on an actual phone.
+Fullscreen viewer controls:
+
+| | frames within a burst | between bursts | close |
+|---|---|---|---|
+| keyboard | Up / Down | Left / Right | Escape |
+| mouse | wheel; scroll the filmstrip | side arrows | close button |
+| touch | **drag the filmstrip** (speed control) or tap a thumbnail | horizontal swipe on the image | swipe down |
+
+The touch filmstrip is a **shuttle/jog control, not a scrollbar**: the
+finger's horizontal displacement from where it landed sets the *speed* of
+playback, not the frame. Push further right and the burst runs forward
+faster (up to 24 fps, the ZV-1's own top burst rate), further left and it
+runs backward, and it wraps around the ends of the burst. There's a small
+deadzone so a tap isn't read as a drag, and a quadratic ramp so slow,
+precise stepping is possible just outside it. Lifting the finger stops the
+animation immediately on the current frame — no inertia. To pick a specific
+frame directly, tap its thumbnail. While shuttling, the stage shows the
+(already-loaded) thumbnail so frames can change at full rate without waiting
+on 2560px JPEGs; the sharp image is restored the moment the finger lifts.
+
+The current burst+frame is reflected in the URL hash so a link can point at
+a specific frame, and the browser Back button always closes the viewer back
+to the grid in one step.
+
+### Testing the UI
+
+`tools/` has a repeatable harness that drives a real headless browser, so
+none of this depends on having photos or a phone at hand:
+
+```sh
+python3 tools/make_fixture.py /tmp/pics-site      # synthetic album (needs magick + ffmpeg)
+python3 -m http.server 8791 --directory /tmp/pics-site &
+
+python3 -m venv /tmp/pw-venv && /tmp/pw-venv/bin/pip install playwright
+/tmp/pw-venv/bin/python tools/ui_test.py          # drives the system chromium
+```
+
+It exercises hover/touch previews, keyboard/wheel navigation, the touch
+shuttle (speed ramp, deadzone, wrapping, stop-on-release, tap-to-select),
+burst swipes and deep-link + Back, asserting on real DOM state and writing
+screenshots to `/tmp/pics-screens`. All checks currently pass. It has *not*
+been run on physical phone hardware — Chromium's touch emulation is a good
+proxy but not identical, so give the shuttle a try on a real device before
+relying on it.
 
 ## 7. Known gaps / next steps
 
