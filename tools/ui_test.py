@@ -608,8 +608,19 @@ def toolbar_icons_test(browser):
         ),
     )
     check(
-        "the clip button says what it downloads",
+        "the clip button says what it opens",
         page.eval_on_selector("#viewer-clip", "el => el.textContent.trim()") == "MP4",
+    )
+    check(
+        "both links open in a new tab rather than downloading",
+        page.evaluate(
+            """() => ['#viewer-download', '#viewer-clip'].every(sel => {
+                   const el = document.querySelector(sel);
+                   return el.target === '_blank'
+                       && el.rel.includes('noopener')
+                       && !el.hasAttribute('download');
+               })"""
+        ),
     )
     check(
         "every control still names itself for screen readers",

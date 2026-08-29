@@ -213,14 +213,12 @@ export function initViewer(bursts) {
     );
 
     downloadLink.href = frame.original;
-    downloadLink.setAttribute("download", frame.original.split("/").pop());
 
     // Bursts long enough to be worth watching get a real-time clip.
     if (clipLink) {
       if (burst.clip) {
         clipLink.hidden = false;
         clipLink.href = burst.clip;
-        clipLink.setAttribute("download", `${burst.id}.mp4`);
       } else {
         clipLink.hidden = true;
         clipLink.removeAttribute("href");
