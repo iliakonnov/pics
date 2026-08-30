@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import album as album_mod
-from . import config, faces as faces_mod, grouping, imaging, metadata, quality, scan
+from . import cache, config, faces as faces_mod, grouping, imaging, metadata, quality, scan
 from .manifest import Manifest
 from .mediameta import MediaMeta
 
@@ -351,6 +351,28 @@ def run_import(
         # Which frame of each burst to show as its cover.
         covers: dict[int, int] = {}
         if pick_covers and quality.available():
+            cover_scoring_bursts = [
+                (f"b{gi:04d}", [frames_by_group[gi][fi].hash for fi in sorted(frames_by_group[gi])])
+                for gi, group in enumerate(groups)
+                if group[0].kind == "photo" and len(group) > 1
+            ]
+            cover_key = cache.fingerprint(
+                {
+                    "bursts": cover_scoring_bursts,
+                    "scale": config.QUALITY_SCAN_SCALE,
+                    "bands": list(config.QUALITY_BLINK_BANDS),
+                    "max_faces": config.QUALITY_MAX_FACES,
+                }
+            )
+            cover_cache = cache.path_for(album_dir, "covers")
+            remembered = cache.load(cover_cache, cover_key)
+        else:
+            remembered = None
+
+        if remembered is not None:
+            covers = {int(gi): fi for gi, fi in remembered["covers"].items()}
+            log(f"covers: reusing {len(covers)} already chosen (nothing changed)")
+        elif pick_covers and quality.available():
             scoring = [
                 (gi, [album_dir / frames_by_group[gi][fi].display
                       for fi in sorted(frames_by_group[gi]) if frames_by_group[gi][fi].display])
@@ -368,6 +390,7 @@ def run_import(
             covers = {scoring[i][0]: best for i, best in scored.items()}
             moved = sum(1 for v in covers.values() if v != 0)
             log(f"  {moved} of {len(covers)} bursts got a better cover than their first frame")
+            cache.save(cover_cache, cover_key, {"covers": {str(k): v for k, v in covers.items()}})
         elif pick_covers:
             log("cover selection requested but mediapipe/opencv are not installed")
 
@@ -401,14 +424,42 @@ def run_import(
                 cover = frames_by_group[gi][order[covers.get(gi, 0)] if covers.get(gi, 0) < len(order) else order[0]]
                 if cover.display:
                     photo_refs.append((f"b{gi:04d}", cover.hash, album_dir / cover.display))
-            log(f"grouping faces across {len(photo_refs)} burst(s)...")
-            identities, by_burst = faces_mod.group_by_face(
-                album_dir, photo_refs, max_identities=max_faces, jobs=jobs, log=log
+            face_key = cache.fingerprint(
+                {
+                    "photos": [(bid, h) for bid, h, _p in photo_refs],
+                    "model": config.FACE_MODEL,
+                    "det_size": config.FACE_DET_SIZE,
+                    "scale": config.FACE_SCAN_SCALE,
+                    "min_score": config.FACE_MIN_SCORE,
+                    "distance": config.FACE_CLUSTER_DISTANCE,
+                    "min_photos": config.FACE_MIN_PHOTOS,
+                    "min_share": config.FACE_MIN_SHARE,
+                    "max_identities": max_faces,
+                }
             )
-            face_entries = [
-                {"id": i.id, "avatar": i.avatar, "photos": i.photo_count, "bursts": len(i.burst_ids)}
-                for i in identities
-            ]
+            face_cache = cache.path_for(album_dir, "faces")
+            remembered_faces = cache.load(face_cache, face_key)
+            # A cached answer is only usable while its avatars still exist.
+            if remembered_faces is not None and not all(
+                (album_dir / f["avatar"]).is_file() for f in remembered_faces["faces"]
+            ):
+                remembered_faces = None
+
+            if remembered_faces is not None:
+                face_entries = remembered_faces["faces"]
+                by_burst = remembered_faces["by_burst"]
+                log(f"faces: reusing {len(face_entries)} group(s) found earlier (nothing changed)")
+            else:
+                log(f"grouping faces across {len(photo_refs)} burst(s)...")
+                identities, by_burst = faces_mod.group_by_face(
+                    album_dir, photo_refs, max_identities=max_faces, jobs=jobs, log=log
+                )
+                face_entries = [
+                    {"id": i.id, "avatar": i.avatar, "photos": i.photo_count, "bursts": len(i.burst_ids)}
+                    for i in identities
+                ]
+                cache.save(face_cache, face_key, {"faces": face_entries, "by_burst": by_burst})
+
             for burst in bursts:
                 burst.faces = by_burst.get(burst.id, [])
         elif group_faces:

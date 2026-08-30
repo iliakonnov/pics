@@ -188,6 +188,15 @@ again later into a fresh album.
   Nobody is named or matched across albums. Four workers rather than one
   per core, because each model copy costs about 600MB.
 
+- **Caching** (`picscli/cache.py`): cover selection and face grouping are
+  the only steps that cost minutes rather than seconds, and unlike the
+  image conversions they produce metadata rather than files, so they used
+  to run again on every import. Their results are now kept in
+  `covers.cache.json` and `faces.cache.json` beside the album, keyed by a
+  fingerprint of the frames they looked at and the settings that shaped
+  the answer — change either and they recompute, change neither and a
+  re-import costs 39s instead of 242s. Cache files are never uploaded.
+
 - **Publishing** (`picscli/upload.py`): content-hash-named media gets
   `Cache-Control: public, max-age=31536000, immutable`; HTML/JSON/JS/CSS get
   `no-cache`. The bucket is public-read (per your choice — no signed URLs).

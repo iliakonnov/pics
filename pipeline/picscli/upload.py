@@ -27,7 +27,7 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError
 
-from . import config
+from . import cache, config
 
 _IMMUTABLE_DIRS = {"originals", "thumb", "medium", "display", "preview", "video", "clip", "faces"}
 
@@ -134,6 +134,8 @@ def sync_album(
     for path in sorted(album_dir.rglob("*")):
         if not path.is_file():
             continue
+        if path.name.endswith(cache.SUFFIX):
+            continue  # working state, of no use to a viewer
         rel = path.relative_to(album_dir)
         planned.append((f"{album_id}/{rel.as_posix()}", path, rel.parts[0] in _IMMUTABLE_DIRS))
 
