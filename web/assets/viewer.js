@@ -65,6 +65,7 @@ export function initViewer(bursts) {
   let renderToken = 0;
 
   const currentBurst = () => bursts[burstIndex];
+  const coverOf = (bi) => bursts[bi]?.coverIndex || 0;
   const currentFrame = () => currentBurst().frames[frameIndex];
   const hashFor = (bi, fi) => `${bursts[bi].id}:${fi}`;
 
@@ -74,7 +75,8 @@ export function initViewer(bursts) {
     const [burstId, frameStr] = raw.split(":");
     const bi = bursts.findIndex((b) => b.id === burstId);
     if (bi === -1) return null;
-    const fi = clamp(parseInt(frameStr || "0", 10) || 0, 0, bursts[bi].frames.length - 1);
+    const asked = frameStr === undefined || frameStr === "" ? coverOf(bi) : parseInt(frameStr, 10) || 0;
+    const fi = clamp(asked, 0, bursts[bi].frames.length - 1);
     return { bi, fi };
   }
 
@@ -376,7 +378,7 @@ export function initViewer(bursts) {
     mediaHost.innerHTML = "";
   }
 
-  function open(bi, fi = 0) {
+  function open(bi, fi = coverOf(bi)) {
     showAt(bi, fi);
     pushOrReplace(true);
   }
@@ -400,8 +402,14 @@ export function initViewer(bursts) {
 
   const nextFrame = () => goTo(burstIndex, frameIndex + 1);
   const prevFrame = () => goTo(burstIndex, frameIndex - 1);
-  const nextBurst = () => goTo(burstIndex + 1, 0);
-  const prevBurst = () => goTo(burstIndex - 1, 0);
+  /** Moving to another burst lands on its chosen frame, not its first. */
+  function goToBurst(step) {
+    const bi = clamp(burstIndex + step, 0, bursts.length - 1);
+    goTo(bi, coverOf(bi));
+  }
+
+  const nextBurst = () => goToBurst(1);
+  const prevBurst = () => goToBurst(-1);
 
   // -- shuttle hint ----------------------------------------------------
   //

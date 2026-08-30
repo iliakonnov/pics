@@ -111,7 +111,8 @@ def build(site: Path) -> None:
     bursts.append(
         {
             "id": "b0001", "type": "photo", "capturedAt": "2026-08-29T14:02:00",
-            "count": len(frames_d), "coverIndex": 0, "thumbW": 480, "thumbH": 300,
+            # Cover deliberately off the first frame: navigation must land here.
+            "count": len(frames_d), "coverIndex": 2, "thumbW": 480, "thumbH": 300,
             "preview": "burstD-preview.webp", "frames": frames_d,
         }
     )

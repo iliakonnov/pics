@@ -202,7 +202,8 @@ def desktop_tests(browser):
 
     page.keyboard.press("ArrowRight")
     page.wait_for_timeout(250)
-    check("ArrowRight -> next burst", page.evaluate("location.hash") == "#b0001:0")
+    check("ArrowRight -> next burst (on its cover)", page.evaluate("location.hash") == "#b0001:2",
+          page.evaluate("location.hash"))
     check("filmstrip shown for the 3-frame burst", page.eval_on_selector("#filmstrip", "el => !el.hidden"))
 
     page.keyboard.press("ArrowRight")
@@ -387,7 +388,7 @@ def shuttle_tests(browser):
     touch(page, "#viewer-stage", "touchstart", 300, 400)
     touch(page, "#viewer-stage", "touchend", 50, 400)
     page.wait_for_timeout(250)
-    check("stage swipe-left -> next burst", page.evaluate("location.hash") == "#b0001:0", page.evaluate("location.hash"))
+    check("stage swipe-left -> next burst", page.evaluate("location.hash") == "#b0001:2", page.evaluate("location.hash"))
 
     touch(page, "#viewer-stage", "touchstart", 200, 300)
     touch(page, "#viewer-stage", "touchend", 200, 500)
@@ -438,7 +439,7 @@ def zoom_tests(browser):
     touch(page, "#viewer-stage", "touchstart", 300, 420)
     touch(page, "#viewer-stage", "touchend", 50, 420)
     page.wait_for_timeout(250)
-    check("swipe works again once unzoomed", page.evaluate("location.hash") == "#b0001:0",
+    check("swipe works again once unzoomed", page.evaluate("location.hash") == "#b0001:2",
           page.evaluate("location.hash"))
 
     # Pinch out with two fingers.
@@ -528,6 +529,55 @@ def shuttle_hint_test(browser):
     page.wait_for_selector("#viewer:not([hidden])")
     page.wait_for_timeout(400)
     check("no strip (and no hint) for a single-frame burst", page.eval_on_selector("#filmstrip-wrap", "el => el.hidden"))
+    page.close()
+
+
+def cover_frame_test(browser):
+    print("covers: a burst opens on its chosen frame, however you reach it")
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    watch(page, "covers")
+    page.goto(ALBUM)
+    page.wait_for_selector(".burst-tile")
+    page.wait_for_timeout(400)
+
+    # b0001's cover is frame 2 in the fixture.
+    page.query_selector_all(".burst-tile")[1].click()
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(400)
+    check("clicking a tile opens its cover", page.evaluate("location.hash") == "#b0001:2",
+          page.evaluate("location.hash"))
+
+    # Arriving from the previous burst must land on the cover too.
+    page.keyboard.press("ArrowLeft")
+    page.wait_for_timeout(300)
+    page.keyboard.press("ArrowRight")
+    page.wait_for_timeout(300)
+    check("stepping into a burst lands on its cover", page.evaluate("location.hash") == "#b0001:2",
+          page.evaluate("location.hash"))
+
+    page.close()
+
+    # A link naming only the burst, arriving as a cold load.
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    watch(page, "covers-link")
+    page.goto(f"{ALBUM}#b0001")
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(400)
+    check("a burst-only link opens the cover", page.evaluate("location.hash") == "#b0001:2",
+          page.evaluate("location.hash"))
+    page.close()
+
+    # Swiping between bursts on touch must behave the same.
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+    watch(page, "covers-touch")
+    page.goto(f"{ALBUM}#b0000:0")
+    page.wait_for_selector("#viewer:not([hidden])")
+    page.wait_for_timeout(400)
+    touch(page, "#viewer-stage", "touchstart", 320, 400)
+    touch(page, "#viewer-stage", "touchend", 60, 400)
+    page.wait_for_timeout(400)
+    check("swiping to the next burst lands on its cover",
+          page.evaluate("location.hash") == "#b0001:2", page.evaluate("location.hash"))
     page.close()
 
 
@@ -903,6 +953,7 @@ with sync_playwright() as p:
     shuttle_tests(browser)
     zoom_tests(browser)
     shuttle_hint_test(browser)
+    cover_frame_test(browser)
     video_playback_test(browser)
     portrait_fit_test(browser)
     placeholder_test(browser)
