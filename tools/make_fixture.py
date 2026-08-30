@@ -191,8 +191,21 @@ def build(site: Path) -> None:
         }
     )
 
+    # Two synthetic "people": enough to exercise the filter's radio
+    # behaviour without needing real faces.
+    (album/"faces").mkdir(exist_ok=True)
+    for i, hue in enumerate((20, 210)):
+        solid(album/"faces"/f"f{i}.webp", 96, 96, hue, f"P{i}", 30)
+    bursts[0]["faces"] = ["f0"]
+    bursts[1]["faces"] = ["f0", "f1"]
+    bursts[2]["faces"] = ["f1"]
+
     album_doc = {
         "id": "demo", "title": "Пляж", "date": "2026-08-29",
+        "faces": [
+            {"id": "f0", "avatar": "faces/f0.webp", "photos": 19, "bursts": 2},
+            {"id": "f1", "avatar": "faces/f1.webp", "photos": 4, "bursts": 2},
+        ],
         "generatedAt": "2026-08-29T21:45:00", "bursts": bursts,
     }
     (album / "album.json").write_text(json.dumps(album_doc, indent=2, ensure_ascii=False), encoding="utf-8")

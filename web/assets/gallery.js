@@ -39,6 +39,7 @@ function badgeFor(burst) {
 export function renderBurstGrid(container, bursts, { onOpen }) {
   const coarse = isCoarsePointer();
   const layoutItems = [];
+  const tileOf = new Map();
 
   bursts.forEach((burst, index) => {
     const frame = burst.frames[burst.coverIndex];
@@ -46,10 +47,16 @@ export function renderBurstGrid(container, bursts, { onOpen }) {
 
     const tile = el(
       "button",
-      { class: "burst-tile", type: "button", onClick: () => onOpen(index, 0) },
+      {
+        class: "burst-tile",
+        type: "button",
+        // Open on the frame the tile is showing, not blindly the first one.
+        onClick: () => onOpen(index, burst.coverIndex || 0),
+      },
       [cover, badgeFor(burst)]
     );
     layoutItems.push({ el: tile, aspect: (burst.thumbW || 3) / (burst.thumbH || 2) });
+    tileOf.set(burst.id, layoutItems[layoutItems.length - 1]);
 
     if (burst.preview) {
       const preview = el("img", { class: "preview", alt: "" });
@@ -77,11 +84,24 @@ export function renderBurstGrid(container, bursts, { onOpen }) {
     // into the row it belongs to.
   });
 
-  const relayout = () => justifyRows(container, layoutItems);
+  let shown = layoutItems;
+  const relayout = () => justifyRows(container, shown);
   relayout();
   onResize(relayout);
 
-  if (!coarse) return;
+  /** Narrow the grid to bursts containing `faceId`, or all of them. */
+  function filterByFace(faceId) {
+    shown = faceId
+      ? bursts.filter((b) => (b.faces || []).includes(faceId)).map((b) => tileOf.get(b.id)).filter(Boolean)
+      : layoutItems;
+    for (const item of layoutItems) item.el.remove();
+    container.innerHTML = "";
+    relayout();
+    window.scrollTo({ top: 0 });
+  }
+
+  // Touch-only from here: with a mouse the hover handlers above cover it.
+  if (!coarse) return { filterByFace };
 
   let peeking = null;
   let startX = 0;
@@ -172,4 +192,46 @@ export function renderBurstGrid(container, bursts, { onOpen }) {
   // Holding a finger on an image otherwise raises the "save image" sheet
   // or a selection callout, which would interrupt the peek.
   container.addEventListener("contextmenu", (event) => event.preventDefault());
+
+  return { filterByFace };
+}
+
+/**
+ * A row of faces above the grid, one per person the import recognised.
+ * Radio behaviour: one at a time, and picking the active one clears it.
+ * Deliberately small and unlabelled — it is a shortcut, not a headline.
+ */
+export function renderFaceFilter(container, faces, { onPick }) {
+  if (!faces || faces.length < 2) return;
+  container.hidden = false;
+  let active = null;
+
+  const buttons = faces.map((face) =>
+    el(
+      "button",
+      {
+        class: "face-chip",
+        type: "button",
+        role: "radio",
+        "aria-checked": "false",
+        "aria-label": `Показать фотографии этого человека (${face.photos})`,
+        title: `${face.photos} фото`,
+        onClick: () => pick(face.id),
+      },
+      [el("img", { src: face.avatar, alt: "", loading: "lazy" })]
+    )
+  );
+
+  function pick(id) {
+    active = active === id ? null : id;
+    buttons.forEach((b, i) => {
+      const on = faces[i].id === active;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    container.classList.toggle("filtering", active !== null);
+    onPick(active);
+  }
+
+  for (const b of buttons) container.append(b);
 }

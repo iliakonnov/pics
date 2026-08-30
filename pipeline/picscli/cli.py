@@ -64,6 +64,24 @@ def main() -> None:
     help="Offer a real-time MP4 for bursts spanning at least this long "
     f"(default {config.BURST_MP4_MIN_SECONDS}; 0 disables)",
 )
+@click.option(
+    "--faces",
+    "group_faces",
+    is_flag=True,
+    help="Group photos by who is in them and offer a face filter (needs insightface)",
+)
+@click.option(
+    "--max-faces",
+    default=config.FACE_MAX_IDENTITIES,
+    show_default=True,
+    help="Most people to offer in the face filter",
+)
+@click.option(
+    "--best-frame",
+    "pick_covers",
+    is_flag=True,
+    help="Choose each burst's cover by sharpness and open eyes (needs mediapipe)",
+)
 @library_option
 def import_cmd(
     card_root: Path,
@@ -71,6 +89,9 @@ def import_cmd(
     album_id: str | None,
     jobs: int | None,
     mp4_min_seconds: float | None,
+    group_faces: bool,
+    max_faces: int,
+    pick_covers: bool,
     library: str | None,
 ) -> None:
     """Import JPEGs/videos from CARD_ROOT as one new album."""
@@ -83,6 +104,9 @@ def import_cmd(
             album_id=album_id,
             jobs=jobs,
             mp4_min_seconds=mp4_min_seconds,
+            group_faces=group_faces,
+            pick_covers=pick_covers,
+            max_faces=max_faces,
             log=click.echo,
         )
     except RuntimeError as exc:

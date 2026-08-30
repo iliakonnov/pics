@@ -35,16 +35,26 @@ class Burst:
     thumb_h: int
     frames: list[Frame]
     preview: str | None = None  # animated webp, relative path; None for single-frame photo bursts
+    faces: list[str] = field(default_factory=list)  # identity ids visible in this burst
     clip: str | None = None  # real-time mp4, for bursts long enough to be worth one
     cover_index: int = 0
 
 
-def build_album_json(*, album_id: str, title: str, date: str, bursts: list[Burst], generated_at: datetime) -> dict:
+def build_album_json(
+    *,
+    album_id: str,
+    title: str,
+    date: str,
+    bursts: list[Burst],
+    generated_at: datetime,
+    faces: list[dict] | None = None,
+) -> dict:
     return {
         "id": album_id,
         "title": title,
         "date": date,
         "generatedAt": generated_at.isoformat(),
+        "faces": faces or [],
         "bursts": [
             {
                 "id": b.id,
@@ -56,6 +66,7 @@ def build_album_json(*, album_id: str, title: str, date: str, bursts: list[Burst
                 "thumbH": b.thumb_h,
                 "preview": b.preview,
                 "clip": b.clip,
+                "faces": b.faces,
                 "frames": [
                     {
                         "hash": f.hash,

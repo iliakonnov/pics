@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import album as album_mod
-from . import config, grouping, imaging, metadata, scan
+from . import config, faces as faces_mod, grouping, imaging, metadata, quality, scan
 from .manifest import Manifest
 from .mediameta import MediaMeta
 
@@ -226,6 +226,9 @@ def run_import(
     album_id: str | None = None,
     jobs: int | None = None,
     mp4_min_seconds: float | None = None,
+    group_faces: bool = False,
+    pick_covers: bool = False,
+    max_faces: int = config.FACE_MAX_IDENTITIES,
     log: Logger = _default_log,
 ) -> str:
     jobs = jobs or default_jobs()
@@ -345,6 +348,29 @@ def run_import(
         )
         clip_by_group = {clip_tasks[i][0]: rel for i, rel in clips.items()}
 
+        # Which frame of each burst to show as its cover.
+        covers: dict[int, int] = {}
+        if pick_covers and quality.available():
+            scoring = [
+                (gi, [album_dir / frames_by_group[gi][fi].display
+                      for fi in sorted(frames_by_group[gi]) if frames_by_group[gi][fi].display])
+                for gi, group in enumerate(groups)
+                if group[0].kind == "photo" and len(group) > 1
+            ]
+            log(f"choosing a cover for {len(scoring)} burst(s)...")
+            scored = _run_parallel(
+                scoring,
+                lambda t: quality.pick_best([quality.score_frame(p) for p in t[1]]),
+                jobs,
+                label="covers",
+                log=log,
+            )
+            covers = {scoring[i][0]: best for i, best in scored.items()}
+            moved = sum(1 for v in covers.values() if v != 0)
+            log(f"  {moved} of {len(covers)} bursts got a better cover than their first frame")
+        elif pick_covers:
+            log("cover selection requested but mediapipe/opencv are not installed")
+
         for gi, group in enumerate(groups):
             ordered = [frames_by_group[gi][fi] for fi in sorted(frames_by_group[gi])]
             bursts.append(
@@ -357,9 +383,36 @@ def run_import(
                     frames=ordered,
                     preview=preview_by_group.get(gi),
                     clip=clip_by_group.get(gi),
-                    cover_index=0,
+                    cover_index=covers.get(gi, 0),
                 )
             )
+
+        # Who is in which burst, so the album can be filtered by person.
+        face_entries: list[dict] = []
+        if group_faces and faces_mod.available():
+            # One frame per burst is enough: the frames of a burst are the
+            # same moment, so scanning all of them multiplies the work for
+            # the same answer.
+            photo_refs = []
+            for gi, group in enumerate(groups):
+                if group[0].kind != "photo":
+                    continue
+                order = sorted(frames_by_group[gi])
+                cover = frames_by_group[gi][order[covers.get(gi, 0)] if covers.get(gi, 0) < len(order) else order[0]]
+                if cover.display:
+                    photo_refs.append((f"b{gi:04d}", cover.hash, album_dir / cover.display))
+            log(f"grouping faces across {len(photo_refs)} burst(s)...")
+            identities, by_burst = faces_mod.group_by_face(
+                album_dir, photo_refs, max_identities=max_faces, jobs=jobs, log=log
+            )
+            face_entries = [
+                {"id": i.id, "avatar": i.avatar, "photos": i.photo_count, "bursts": len(i.burst_ids)}
+                for i in identities
+            ]
+            for burst in bursts:
+                burst.faces = by_burst.get(burst.id, [])
+        elif group_faces:
+            log("face grouping requested but insightface/scikit-learn are not installed")
 
         album_json = album_mod.build_album_json(
             album_id=resolved_album_id,
@@ -367,6 +420,7 @@ def run_import(
             date=date,
             bursts=bursts,
             generated_at=datetime.now(),
+            faces=face_entries,
         )
         (album_dir / "album.json").write_text(json.dumps(album_json, indent=2, ensure_ascii=False), encoding="utf-8")
         db.commit()

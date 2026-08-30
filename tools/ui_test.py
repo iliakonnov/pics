@@ -681,6 +681,61 @@ def toolbar_icons_test(browser):
     page.close()
 
 
+def face_filter_test(browser):
+    print("faces: a compact filter that narrows the grid to one person")
+    page = browser.new_page(viewport={"width": 1000, "height": 900})
+    watch(page, "faces")
+    page.goto(ALBUM)
+    page.wait_for_selector(".burst-tile")
+    page.wait_for_timeout(500)
+
+    chips = page.query_selector_all(".face-chip")
+    check("one chip per person", len(chips) == 2, str(len(chips)))
+    check(
+        "the filter stays small and out of the way",
+        page.evaluate(
+            """() => {
+                const f = document.getElementById('face-filter').getBoundingClientRect();
+                const chip = document.querySelector('.face-chip').getBoundingClientRect();
+                return f.height < 60 && chip.width <= 40;
+            }"""
+        ),
+    )
+
+    total = len(page.query_selector_all(".burst-tile"))
+    chips[0].click()
+    page.wait_for_timeout(400)
+    shown = len(page.query_selector_all(".burst-tile"))
+    check("picking a face narrows the grid", 0 < shown < total, f"{shown} of {total}")
+    check(
+        "only bursts with that person remain",
+        page.evaluate(
+            """() => {
+                const ids = [...document.querySelectorAll('.burst-tile')].length;
+                return ids === 2;   // fixture: f0 is in b0000 and b0001
+            }"""
+        ),
+    )
+    check("rows still fill the width when filtered", all(abs(f - 1) < 0.005 for f in page.evaluate(ROW_PROBE)["fills"]))
+
+    # Radio behaviour: a second face replaces the first, never adds to it.
+    page.query_selector_all(".face-chip")[1].click()
+    page.wait_for_timeout(400)
+    check(
+        "only one face is ever active",
+        page.evaluate("() => document.querySelectorAll('.face-chip.active').length") == 1,
+    )
+    check("switching face switches the selection", len(page.query_selector_all(".burst-tile")) == 2)
+
+    # Picking the active one again clears the filter.
+    page.query_selector_all(".face-chip")[1].click()
+    page.wait_for_timeout(400)
+    check("picking it again clears the filter", len(page.query_selector_all(".burst-tile")) == total)
+    check("no chip left active", page.evaluate("() => document.querySelectorAll('.face-chip.active').length") == 0)
+    shot(page, "27-face-filter")
+    page.close()
+
+
 def justified_grid_test(browser):
     print("grid: rows are filled edge to edge at any width")
     for width, height in [(390, 844), (768, 1024), (1400, 950)]:
@@ -843,6 +898,7 @@ with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=CHROMIUM, headless=True)
     desktop_tests(browser)
     toolbar_icons_test(browser)
+    face_filter_test(browser)
     justified_grid_test(browser)
     shuttle_tests(browser)
     zoom_tests(browser)

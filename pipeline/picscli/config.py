@@ -89,6 +89,34 @@ VIDEO_PREVIEW_SAMPLE_FRAMES = 16
 # many seconds of actual shooting. The ZV-1 fires fast: at 10fps a
 # 10-frame burst is only 0.9s, so this threshold decides how many clips
 # an album gets. See --mp4-min-seconds.
+# Cover selection (optional; needs mediapipe + opencv).
+FACE_LANDMARK_MODEL = str(Path(__file__).resolve().parent.parent / "models" / "face_landmarker.task")
+QUALITY_SCAN_SCALE = 0.25   # detection is unaffected; decoding dominates anyway
+QUALITY_MAX_FACES = 6
+# Eyes are not simply open or shut: a score of 0.38 is a half-closed,
+# mid-blink look that a single 0.5 cutoff waves through. Frames are sorted
+# into these bands and the sharpest frame from the best non-empty band
+# wins, so a clearly open-eyed frame beats a slightly sharper squint.
+QUALITY_BLINK_BANDS = (0.15, 0.4)
+
+# Face grouping (optional; needs insightface + scikit-learn).
+FACE_MODEL = "buffalo_l"
+FACE_DET_SIZE = 640
+FACE_SCAN_SCALE = 0.5      # display copies are 2560px; half is plenty for detection
+FACE_MIN_SCORE = 0.6
+FACE_WORKERS = 4           # ~600MB of model per worker, so not one per core
+# Chosen against a real 955-photo album: 0.7 split one person in two, 0.9
+# merged two people, 0.8 landed on exactly the five who were there.
+FACE_CLUSTER_DISTANCE = 0.8
+# Someone glimpsed in a couple of frames is a passer-by, and offering them
+# as a filter button that yields three photos is just clutter. On a real
+# 364-burst album this is what separates the five people who were actually
+# there from two stray three-photo detections.
+FACE_MIN_PHOTOS = 5
+FACE_MIN_SHARE = 0.01      # ...or 1% of the album's bursts, whichever is larger
+FACE_MAX_IDENTITIES = 8    # the filter has to stay small
+FACE_AVATAR_SIZE = 96
+
 BURST_MP4_MIN_SECONDS = 1.5
 BURST_MP4_HEIGHT = 1080
 BURST_MP4_FPS = 30  # frames sampled across the clip for the animated preview

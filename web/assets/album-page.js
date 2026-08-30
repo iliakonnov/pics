@@ -1,5 +1,5 @@
 import { fetchJSON, formatDateShort } from "./utils.js";
-import { renderBurstGrid } from "./gallery.js";
+import { renderBurstGrid, renderFaceFilter } from "./gallery.js";
 import { initViewer } from "./viewer.js";
 
 async function main() {
@@ -26,7 +26,10 @@ async function main() {
   }
 
   const viewer = initViewer(album.bursts);
-  renderBurstGrid(grid, album.bursts, { onOpen: (index, frame) => viewer.open(index, frame) });
+  const gallery = renderBurstGrid(grid, album.bursts, { onOpen: (index, frame) => viewer.open(index, frame) });
+  renderFaceFilter(document.getElementById("face-filter"), album.faces, {
+    onPick: (faceId) => gallery.filterByFace(faceId),
+  });
 
   viewer.openFromHash();
 }

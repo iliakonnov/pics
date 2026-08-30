@@ -29,7 +29,7 @@ from botocore.exceptions import ClientError
 
 from . import config
 
-_IMMUTABLE_DIRS = {"originals", "thumb", "medium", "display", "preview", "video", "clip"}
+_IMMUTABLE_DIRS = {"originals", "thumb", "medium", "display", "preview", "video", "clip", "faces"}
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",

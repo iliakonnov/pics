@@ -81,6 +81,10 @@ pics setup-bucket
 # cores; -j sets the worker count.
 pics import /run/media/$USER/SONY_CARD --title "Выходные на море"
 
+# Optional extras, each needing its own heavy dependency:
+#   --best-frame  choose each burst's cover (mediapipe)
+#   --faces       group photos by person and show a face filter (insightface)
+
 # Look it over locally first, served exactly as it will be published:
 pics preview --port 8000
 
@@ -162,6 +166,27 @@ again later into a fresh album.
   short in *real* time even when they hold many frames. Of 283 multi-frame
   bursts in a 965-photo album, 1 spans over 1.5s, 14 over 0.5s and 56 over
   0.3s. The published album uses 0.5s: 14 clips, 9.3MB in total.
+
+- **Cover selection** (`picscli/quality.py`, `--best-frame`, optional):
+  picks the frame of each burst worth showing, by sharpness (variance of
+  the Laplacian) among the frames whose subjects have their eyes open
+  (MediaPipe blendshapes, graded into bands rather than one cutoff — a
+  half-blink scores about 0.4). On a real album it moved 154 of 283
+  multi-frame bursts off their first frame.
+
+  General image-quality metrics were measured against 20 real bursts and
+  are *not* a substitute: brisque, niqe, clipiqa and nima each picked a
+  frame with someone mid-blink regularly (niqe in five bursts of the six
+  that had one) and each picked the burst's *blurriest* frame several
+  times. They score naturalness and aesthetics, not "which of these
+  near-identical shots is the good one".
+
+- **Face grouping** (`picscli/faces.py`, `--faces`, optional): detects and
+  embeds faces with insightface, clusters them by cosine distance, and
+  offers the result as a filter above the grid. Only the chosen cover of
+  each burst is scanned — the frames of a burst are the same moment.
+  Nobody is named or matched across albums. Four workers rather than one
+  per core, because each model copy costs about 600MB.
 
 - **Publishing** (`picscli/upload.py`): content-hash-named media gets
   `Cache-Control: public, max-age=31536000, immutable`; HTML/JSON/JS/CSS get
