@@ -24,6 +24,11 @@ class Frame:
     height: int | None
     size_bytes: int
     exif: dict = field(default_factory=dict)
+    # Paths (relative to the album's Yandex Disk directory) of the
+    # full-resolution files published there, e.g. {"jpg": "JPG/DSC01234.JPG",
+    # "raw": "RAW/DSC01234.ARW"} or {"video": "VIDEO/C0001.MP4"}. None until
+    # the frame has camera-filename information (always set at import time).
+    disk: dict | None = None
 
 
 @dataclass(slots=True)
@@ -48,12 +53,14 @@ def build_album_json(
     bursts: list[Burst],
     generated_at: datetime,
     faces: list[dict] | None = None,
+    disk_url: str | None = None,
 ) -> dict:
     return {
         "id": album_id,
         "title": title,
         "date": date,
         "generatedAt": generated_at.isoformat(),
+        "diskUrl": disk_url,
         "faces": faces or [],
         "bursts": [
             {
@@ -75,6 +82,7 @@ def build_album_json(
                         "display": f.display,
                         "original": f.original,
                         "video": f.video,
+                        "disk": f.disk,
                         "w": f.width,
                         "h": f.height,
                         "bytes": f.size_bytes,

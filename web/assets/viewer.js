@@ -36,11 +36,12 @@ const DOUBLE_TAP_SLOP_PX = 30;
  * via pushState on open and replaceState on navigation, so a single Back
  * press always returns to the grid.
  */
-export function initViewer(bursts) {
+export function initViewer(bursts, diskUrl) {
   const root = document.getElementById("viewer");
   const closeBtn = document.getElementById("viewer-close");
   const info = document.getElementById("viewer-info");
   const downloadLink = document.getElementById("viewer-download");
+  const rawLink = document.getElementById("viewer-raw");
   const clipLink = document.getElementById("viewer-clip");
   const stage = document.getElementById("viewer-stage");
   const prevBurstBtn = document.getElementById("viewer-prev-burst");
@@ -256,7 +257,21 @@ export function initViewer(bursts) {
       bits.filter(Boolean).join(" · ")
     );
 
-    downloadLink.href = frame.original;
+    // Full-resolution files live on Yandex Disk once the album is
+    // published; frame.original (a local relative path) is the fallback
+    // for local preview and for albums published before the move.
+    const disk = frame.disk || {};
+    downloadLink.href = diskUrl && disk.jpg ? `${diskUrl}/${disk.jpg}` : frame.original;
+
+    if (rawLink) {
+      if (diskUrl && disk.raw) {
+        rawLink.hidden = false;
+        rawLink.href = `${diskUrl}/${disk.raw}`;
+      } else {
+        rawLink.hidden = true;
+        rawLink.removeAttribute("href");
+      }
+    }
 
     // Bursts long enough to be worth watching get a real-time clip.
     if (clipLink) {

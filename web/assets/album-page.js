@@ -25,7 +25,7 @@ async function main() {
     return;
   }
 
-  const viewer = initViewer(album.bursts);
+  const viewer = initViewer(album.bursts, album.diskUrl);
   const gallery = renderBurstGrid(grid, album.bursts, { onOpen: (index, frame) => viewer.open(index, frame) });
   renderFaceFilter(document.getElementById("face-filter"), album.faces, {
     onPick: (faceId) => gallery.filterByFace(faceId),

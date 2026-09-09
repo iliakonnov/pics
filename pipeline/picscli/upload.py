@@ -1,17 +1,21 @@
-"""Publish one album to Yandex Object Storage (S3-compatible).
+"""Publish one album: full-resolution originals to Yandex Disk, everything
+the web gallery needs to Yandex Object Storage (S3-compatible).
 
-Each album is uploaded to its own directory, named with the album's
-unguessable id, and is entirely self-contained: its own index.html, its
-own copy of the JS/CSS, its album.json and its media. The directory URL
-is the share link, and nothing outside it is needed to view it — so the
-album can be forgotten locally afterwards, and no index ties albums
-together.
+Each album gets its own S3 directory, named with the album's unguessable
+id, holding its own index.html, its own copy of the JS/CSS, its album.json
+and its web-sized media (thumbnails, medium/display copies, previews,
+clips, face crops, and the transcoded playback video) -- self-contained,
+so the directory URL is the share link and the local copy can be deleted
+afterwards. Full-resolution originals (the developed JPEG, the source ARW,
+and the untouched source video) live on Yandex Disk instead, one directory
+per album under the app folder, named by camera filename and organized
+into JPG/RAW/VIDEO subdirectories; see sync_album_to_disk.
 
-Content-hash-named media is uploaded with a long immutable Cache-Control
-and skipped when the key already exists (identical hash means identical
-bytes). The HTML, JSON and JS/CSS are mutable and always re-uploaded with
-a no-cache header, so re-running an import or editing the web app shows
-up immediately.
+Content-hash-named media is uploaded to S3 with a long immutable
+Cache-Control and skipped when the key already exists (identical hash
+means identical bytes). The HTML, JSON and JS/CSS are mutable and always
+re-uploaded with a no-cache header, so re-running an import or editing the
+web app shows up immediately.
 """
 
 from __future__ import annotations
@@ -28,8 +32,19 @@ import boto3
 from botocore.exceptions import ClientError
 
 from . import cache, config
+from .yadisk import YandexDisk
 
-_IMMUTABLE_DIRS = {"originals", "thumb", "medium", "display", "preview", "video", "clip", "faces"}
+_IMMUTABLE_DIRS = {"thumb", "medium", "display", "preview", "video", "clip", "faces"}
+
+# Full-resolution originals now live on Yandex Disk exclusively (see
+# sync_album_to_disk) -- these directories are skipped in the S3 sync.
+_YADISK_ONLY_DIRS = {"originals", "raw"}
+
+# Legacy: albums published before originals moved to Yandex Disk have their
+# originals/ in S3 COLD storage. cold_originals()/find_originals_not_cold()
+# below remain as one-time catch-up tooling for those; new syncs never
+# write anything under this prefix.
+COLD_STORAGE_CLASS = "COLD"
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -86,16 +101,12 @@ def object_exists(client, bucket: str, key: str) -> bool:
 
 def _put_file(client, bucket: str, key: str, path: Path, *, immutable: bool) -> None:
     cache_control = "public, max-age=31536000, immutable" if immutable else "no-cache"
-    client.upload_file(
-        str(path),
-        bucket,
-        key,
-        ExtraArgs={
-            "ContentType": guess_content_type(path),
-            "CacheControl": cache_control,
-            "ACL": "public-read",
-        },
-    )
+    extra_args = {
+        "ContentType": guess_content_type(path),
+        "CacheControl": cache_control,
+        "ACL": "public-read",
+    }
+    client.upload_file(str(path), bucket, key, ExtraArgs=extra_args)
 
 
 def sync_album(
@@ -137,7 +148,10 @@ def sync_album(
         if path.name.endswith(cache.SUFFIX):
             continue  # working state, of no use to a viewer
         rel = path.relative_to(album_dir)
-        planned.append((f"{album_id}/{rel.as_posix()}", path, rel.parts[0] in _IMMUTABLE_DIRS))
+        top = rel.parts[0]
+        if top in _YADISK_ONLY_DIRS:
+            continue  # full-resolution originals: Yandex Disk only, see sync_album_to_disk
+        planned.append((f"{album_id}/{rel.as_posix()}", path, top in _IMMUTABLE_DIRS))
 
     local = threading.local()
     lock = threading.Lock()
@@ -171,6 +185,141 @@ def sync_album(
                 stats.keys_uploaded.append(key)
 
     return stats
+
+
+def get_disk_client(settings: config.Settings) -> YandexDisk:
+    return YandexDisk(settings.yadisk_token)
+
+
+def _local_path_for_disk_entry(album_dir: Path, frame: dict, key: str) -> Path:
+    if key == "raw":
+        matches = list((album_dir / "raw").glob(f"{frame['hash']}.*"))
+        if not matches:
+            raise RuntimeError(f"raw file missing locally for frame {frame['hash']}")
+        return matches[0]
+    return album_dir / frame["original"]
+
+
+def sync_album_to_disk(
+    disk: YandexDisk,
+    settings: config.Settings,
+    album_id: str,
+    *,
+    force: bool = False,
+    jobs: int | None = None,
+    log=lambda _msg: None,
+) -> str:
+    """Upload every frame's full-resolution file(s) to app:/<album_id>/ on
+    Yandex Disk (JPG/RAW/VIDEO subdirectories, camera filenames), publish
+    that directory, and record the resulting share link as album.json's
+    diskUrl. Returns the public URL.
+    """
+    album_dir = settings.album_dir(album_id)
+    album_json_path = album_dir / "album.json"
+    if not album_json_path.is_file():
+        raise RuntimeError(f"no local album.json for {album_id}: {album_json_path}")
+    album_data = json.loads(album_json_path.read_text(encoding="utf-8"))
+
+    root = f"app:/{album_id}"
+    plan: list[tuple[Path, str]] = []
+    needed_dirs: set[str] = set()
+    for burst in album_data["bursts"]:
+        for frame in burst["frames"]:
+            for key, rel in (frame.get("disk") or {}).items():
+                needed_dirs.add(rel.split("/", 1)[0])
+                plan.append((_local_path_for_disk_entry(album_dir, frame, key), f"{root}/{rel}"))
+
+    disk.ensure_dir(root)
+    for d in sorted(needed_dirs):
+        disk.ensure_dir(f"{root}/{d}")
+
+    jobs = jobs or min(4, os.cpu_count() or 4)
+    lock = threading.Lock()
+    done = 0
+    uploaded = 0
+    skipped = 0
+    total = len(plan)
+    step = max(1, total // 20)
+
+    def worker(job: tuple[Path, str]) -> None:
+        nonlocal done, uploaded, skipped
+        local, remote = job
+        did_skip = not force and disk.exists(remote)
+        if not did_skip:
+            disk.upload(local, remote)
+        with lock:
+            done += 1
+            if did_skip:
+                skipped += 1
+            else:
+                uploaded += 1
+            if done == total or done % step == 0:
+                log(f"  yandex disk: {done}/{total}")
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for future in as_completed([pool.submit(worker, job) for job in plan]):
+            future.result()
+    log(f"  yandex disk: {uploaded} uploaded, {skipped} already present")
+
+    public_url = disk.publish(root)
+    album_data["diskUrl"] = public_url
+    album_json_path.write_text(json.dumps(album_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return public_url
+
+
+def find_originals_not_cold(client, bucket: str) -> list[str]:
+    """List keys under any album's `originals/` that aren't in COLD storage yet.
+
+    Bucket-wide (not per local album): once uploaded, an album's local copy
+    is expected to be deleted, so this is the only way to find originals
+    from albums that no longer exist on disk.
+    """
+    keys = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket):
+        for obj in page.get("Contents", []):
+            parts = obj["Key"].split("/", 2)
+            if len(parts) >= 2 and parts[1] == "originals" and obj.get("StorageClass", "STANDARD") != COLD_STORAGE_CLASS:
+                keys.append(obj["Key"])
+    return keys
+
+
+def cold_originals(
+    settings: config.Settings, bucket: str, keys: list[str], *, jobs: int | None = None, log=lambda _msg: None
+) -> int:
+    """Transition existing objects to COLD storage in place (copy-to-self).
+
+    New originals already land in COLD at upload time (see `sync_album`);
+    this is the one-time catch-up for objects uploaded before that.
+    """
+    jobs = jobs or min(16, (os.cpu_count() or 4) * 2)
+    local = threading.local()
+    lock = threading.Lock()
+    done = 0
+    total = len(keys)
+    step = max(1, total // 20)
+
+    def worker(key: str) -> None:
+        nonlocal done
+        if not hasattr(local, "client"):
+            local.client = get_client(settings)
+        local.client.copy_object(
+            Bucket=bucket,
+            Key=key,
+            CopySource={"Bucket": bucket, "Key": key},
+            StorageClass=COLD_STORAGE_CLASS,
+            MetadataDirective="COPY",
+            ACL="public-read",
+        )
+        with lock:
+            done += 1
+            if done == total or done % step == 0:
+                log(f"  moved to cold {done}/{total}")
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for future in as_completed([pool.submit(worker, key) for key in keys]):
+            future.result()
+    return total
 
 
 def album_url(settings: config.Settings, album_id: str) -> str:

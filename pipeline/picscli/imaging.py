@@ -157,15 +157,36 @@ def select_preview_frames(frames: list, max_frames: int) -> list:
     return [frames[i] for i in indices]
 
 
+def _normalize_frame_dimensions(frame_paths: list[Path], tmp_dir: Path) -> list[Path]:
+    """img2webp requires every frame of an animation to share exact
+    dimensions. A burst's frames are normally all the same source
+    resolution, but one can differ -- e.g. a leftover camera JPEG shot at a
+    different image-size setting, chained into the same burst as
+    raw-developed frames by Sony's sequence numbering. Force any outlier to
+    the first frame's dimensions rather than letting img2webp reject it."""
+    target = image_dimensions(frame_paths[0])
+    normalized = []
+    for i, frame in enumerate(frame_paths):
+        if i == 0 or image_dimensions(frame) == target:
+            normalized.append(frame)
+            continue
+        fixed = tmp_dir / f"normalized_{i}{frame.suffix}"
+        _run([config.MAGICK_BIN, str(frame), "-resize", f"{target[0]}x{target[1]}!", str(fixed)])
+        normalized.append(fixed)
+    return normalized
+
+
 def make_animated_webp(frame_paths: list[Path], dst: Path, *, fps: int = config.PREVIEW_WEBP_FPS) -> None:
     if len(frame_paths) < 2:
         raise ValueError("need at least 2 frames to build an animated webp")
     dst.parent.mkdir(parents=True, exist_ok=True)
     delay_ms = max(round(1000 / fps), 20)
-    cmd = [config.IMG2WEBP_BIN, "-d", str(delay_ms), "-loop", "0", "-lossy", "-q", "70"]
-    cmd += [str(frame) for frame in frame_paths]
-    cmd += ["-o", str(dst)]
-    _run(cmd)
+    with tempfile.TemporaryDirectory() as tmp:
+        normalized = _normalize_frame_dimensions(frame_paths, Path(tmp))
+        cmd = [config.IMG2WEBP_BIN, "-d", str(delay_ms), "-loop", "0", "-lossy", "-q", "70"]
+        cmd += [str(frame) for frame in normalized]
+        cmd += ["-o", str(dst)]
+        _run(cmd)
 
 
 def make_burst_mp4(frames: list[tuple[Path, float]], dst: Path, *, height: int = 1080, fps: int = 30) -> None:
@@ -181,16 +202,21 @@ def make_burst_mp4(frames: list[tuple[Path, float]], dst: Path, *, height: int =
         raise ValueError("need at least 2 frames for a burst clip")
     dst.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as listing:
-        for path, hold in frames:
-            listing.write(f"file '{path.resolve()}'\n")
-            listing.write(f"duration {hold:.4f}\n")
-        # The concat demuxer ignores the final duration unless the last
-        # file is named twice.
-        listing.write(f"file '{frames[-1][0].resolve()}'\n")
-        listing_path = Path(listing.name)
+    with tempfile.TemporaryDirectory() as tmp:
+        # A video needs every frame at the same dimensions; see
+        # _normalize_frame_dimensions for why a burst's frames might not be.
+        normalized_paths = _normalize_frame_dimensions([path for path, _hold in frames], Path(tmp))
+        frames = list(zip(normalized_paths, [hold for _path, hold in frames]))
 
-    try:
+        listing_path = Path(tmp) / "concat.txt"
+        with listing_path.open("w") as listing:
+            for path, hold in frames:
+                listing.write(f"file '{path.resolve()}'\n")
+                listing.write(f"duration {hold:.4f}\n")
+            # The concat demuxer ignores the final duration unless the last
+            # file is named twice.
+            listing.write(f"file '{frames[-1][0].resolve()}'\n")
+
         _run(
             [
                 config.FFMPEG_BIN,
@@ -207,8 +233,6 @@ def make_burst_mp4(frames: list[tuple[Path, float]], dst: Path, *, height: int =
                 str(dst),
             ]
         )
-    finally:
-        listing_path.unlink(missing_ok=True)
 
 
 def probe_video_duration(src: Path) -> float:

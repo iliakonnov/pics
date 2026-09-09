@@ -37,9 +37,16 @@ REQUIRED_TOOLS = {
     "img2webp": IMG2WEBP_BIN,
 }
 
+# Raw development tools. Not in REQUIRED_TOOLS: only demanded when an import
+# actually contains ARW files (see develop.check_available()), so a
+# JPEG-only card never needs darktable installed.
+DARKTABLE_BIN = os.environ.get("PICS_DARKTABLE", "darktable-cli")
+DCRAW_EMU_BIN = os.environ.get("PICS_DCRAW_EMU", "dcraw_emu")
+
 # --- file types -------------------------------------------------------------
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg"}
+RAW_EXTENSIONS = {".arw"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mts", ".m2ts"}
 
 # --- burst grouping ---------------------------------------------------------
@@ -51,6 +58,14 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".mts", ".m2ts"}
 SONY_SEQUENCE_NUMBER_TAGS = ("MakerNotes:SequenceNumber", "MakerNotes:SequenceImageNumber")
 SONY_SEQUENCE_LENGTH_TAGS = ("MakerNotes:SequenceLength", "MakerNotes:SequenceFileNumber")
 SONY_DRIVE_MODE_TAGS = ("MakerNotes:DriveMode", "MakerNotes:ReleaseMode2")
+
+# ReleaseMode2 values that mean "this burst is exposure-bracketed" (Sony.pm:
+# 2 = Continuous - Exposure Bracketing, 23 = Single-frame - Exposure
+# Bracketing). Verified against a real bracketed burst (album hnoUQgBATI,
+# burst b0050): four frames at ReleaseMode2=2, SequenceNumber 1..4,
+# ExposureCompensation cycling 0/-0.3/+0.3/-0.7. Mode 3 (DRO/WB bracketing)
+# is deliberately excluded: those frames share one exposure.
+SONY_BRACKET_RELEASE_MODES = {2, 23}
 
 # Used when a file carries no usable sequence tags at all. Also a sanity
 # net: photos more than 5x this far apart never share a burst even if the
@@ -121,7 +136,48 @@ BURST_MP4_MIN_SECONDS = 1.5
 BURST_MP4_HEIGHT = 1080
 BURST_MP4_FPS = 30  # frames sampled across the clip for the animated preview
 
-JPEG_ORIGINAL_QUALITY_NOTE = "originals are re-encoded losslessly to progressive JPEG (jpegtran), pixels unchanged"
+JPEG_ORIGINAL_QUALITY_NOTE = (
+    "originals are re-encoded losslessly to progressive JPEG (jpegtran), pixels unchanged "
+    "-- unless the source is a raw file, in which case the original IS the darktable-developed JPEG"
+)
+
+# --- raw development (ARW -> JPEG) -------------------------------------------
+
+# darktable export quality for the developed JPEG, which becomes the album
+# "original". jpegtran re-encodes it losslessly to progressive afterwards.
+DEVELOP_JPEG_QUALITY = 92
+
+# darktable-cli is internally multi-threaded (OpenMP + OpenCL) and each
+# instance can use several GB of RAM, unlike the single-threaded
+# magick/ffmpeg workers in imaging.py. Two instances keep a 12-thread/16GB
+# box busy without thrashing.
+DEVELOP_JOBS = 2
+# Try CPU before OpenCL by default: a claimed-but-broken GPU/driver doesn't
+# make darktable-cli fail, it just makes it pathologically slow (minutes
+# instead of ~15s per frame) in a way the failure-based retry can't catch.
+# Flip this once you've confirmed `clinfo -l` lists a working GPU.
+DEVELOP_OPENCL_FIRST = os.environ.get("PICS_DEVELOP_OPENCL_FIRST", "0") == "1"
+DEVELOP_TIMEOUT_SECONDS = 300
+
+# Exposure analysis (rawanalysis.py): target the raw's median luminance at
+# this fraction of full scale, but never push the 99.5th percentile past
+# the highlight ceiling -- sigmoid rolls off gracefully above 1.0, so a
+# modest headroom is fine and protects against clipped highlights vetoing
+# a needed lift in a dark scene.
+DEVELOP_TARGET_P50 = 0.18
+DEVELOP_HIGHLIGHT_CEILING = 1.5
+DEVELOP_EV_MIN = -1.5
+DEVELOP_EV_MAX = 2.0
+# Constant offset between the analyzer's linear-light measurement and what
+# darktable's pipeline actually renders at EV 0; tuned once by comparing
+# developed output against camera JPEGs on the test set.
+DEVELOP_EV_TRIM = 0.0
+# Frames sampled per burst for exposure analysis (first/middle/last);
+# bracketed bursts analyze every frame instead.
+DEVELOP_SAMPLE_FRAMES = 3
+# A burst's shared EV is only recomputed (triggering redevelopment) if it
+# drifts from the cached value by more than this.
+DEVELOP_EV_EPSILON = 0.05
 
 
 @dataclass(slots=True)
@@ -132,6 +188,7 @@ class Settings:
     s3_region: str = "ru-central1"
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
+    yadisk_token: str | None = None
 
     @property
     def state_db_path(self) -> Path:
@@ -186,4 +243,5 @@ def load_settings(library_root: Path | None = None, env_file: Path | None = None
         s3_region=env.get("PICS_S3_REGION", "ru-central1"),
         s3_access_key=env.get("PICS_S3_ACCESS_KEY"),
         s3_secret_key=env.get("PICS_S3_SECRET_KEY"),
+        yadisk_token=env.get("PICS_YADISK_TOKEN"),
     )

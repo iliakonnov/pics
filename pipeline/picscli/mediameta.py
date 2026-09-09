@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from . import config
+
 
 @dataclass(slots=True)
 class MediaMeta:
@@ -21,7 +23,15 @@ class MediaMeta:
     sequence_length: int | None
     drive_mode: str | None
     exif: dict = field(default_factory=dict)
+    # Raw-development inputs (None for JPEG sources and older imports).
+    release_mode2: int | None = None
+    exposure_compensation: float | None = None
+    exposure_time_s: float | None = None
 
     @property
     def ext(self) -> str:
         return self.path.suffix.lower()
+
+    @property
+    def is_raw(self) -> bool:
+        return self.ext in config.RAW_EXTENSIONS

@@ -82,6 +82,23 @@ def main() -> None:
     is_flag=True,
     help="Choose each burst's cover by sharpness and open eyes (needs mediapipe)",
 )
+@click.option(
+    "--develop-jobs",
+    default=None,
+    type=int,
+    help=f"Parallel darktable-cli instances for raw development (default {config.DEVELOP_JOBS}; "
+    "kept separate from --jobs since darktable is internally multi-threaded and memory-hungry)",
+)
+@click.option(
+    "--redevelop",
+    is_flag=True,
+    help="Re-develop every raw frame even if already developed with the current settings",
+)
+@click.option(
+    "--skip-raw",
+    is_flag=True,
+    help="Ignore ARW files entirely and import camera JPEGs only",
+)
 @library_option
 def import_cmd(
     card_root: Path,
@@ -92,9 +109,12 @@ def import_cmd(
     group_faces: bool,
     max_faces: int,
     pick_covers: bool,
+    develop_jobs: int | None,
+    redevelop: bool,
+    skip_raw: bool,
     library: str | None,
 ) -> None:
-    """Import JPEGs/videos from CARD_ROOT as one new album."""
+    """Import JPEGs/RAWs/videos from CARD_ROOT as one new album."""
     settings = _settings(library)
     try:
         result_id = importer.run_import(
@@ -107,6 +127,9 @@ def import_cmd(
             group_faces=group_faces,
             pick_covers=pick_covers,
             max_faces=max_faces,
+            develop_jobs=develop_jobs,
+            redevelop=redevelop,
+            skip_raw=skip_raw,
             log=click.echo,
         )
     except RuntimeError as exc:
@@ -145,18 +168,27 @@ def list_cmd(library: str | None) -> None:
 def upload_cmd(
     album_id: str | None, web_root_opt: str | None, force: bool, jobs: int | None, library: str | None
 ) -> None:
-    """Publish one album as a self-contained directory and print its link."""
+    """Publish one album: originals to Yandex Disk, gallery to S3."""
     settings = _settings(library)
     resolved = _resolve_album(settings, album_id)
     web_root = _web_root(web_root_opt)
-    client = upload.get_client(settings)
 
+    try:
+        disk_client = upload.get_disk_client(settings)
+        click.echo("publishing originals to Yandex Disk...")
+        disk_url = upload.sync_album_to_disk(disk_client, settings, resolved, force=force, jobs=jobs, log=click.echo)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    client = upload.get_client(settings)
     stats = upload.sync_album(
         client, settings, resolved, web_root, force=force, jobs=jobs, log=click.echo
     )
     click.echo(f"{resolved}: {stats.uploaded} uploaded, {stats.skipped} already present")
     click.echo("\nShare this link:")
     click.echo("  " + upload.album_url(settings, resolved))
+    click.echo("\nOriginals (raw + full-resolution JPEG/video) on Yandex Disk:")
+    click.echo("  " + disk_url)
     click.echo("\nThe directory is self-contained, so the local copy can now be deleted:")
     click.echo(f"  rm -rf {settings.album_dir(resolved)}")
 
@@ -194,6 +226,42 @@ def preview_cmd(
         preview.serve(root, port)
     except KeyboardInterrupt:
         click.echo("\nstopped")
+
+
+@main.command("cold-originals")
+@click.option("--dry-run", is_flag=True, help="List what would change without modifying anything")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@library_option
+def cold_originals_cmd(dry_run: bool, yes: bool, library: str | None) -> None:
+    """Legacy: move any already-uploaded S3 originals/ object to COLD storage.
+
+    Full-resolution originals now publish to Yandex Disk instead (see
+    `pics upload`) and are never written to S3, so this only matters for
+    albums published before that change (across every album in the bucket,
+    including ones no longer kept locally).
+    """
+    settings = _settings(library)
+    client = upload.get_client(settings)
+    keys = upload.find_originals_not_cold(client, settings.s3_bucket)
+    if not keys:
+        click.echo("nothing to do — every original is already in COLD storage.")
+        return
+
+    click.echo(f"{len(keys)} object(s) under originals/ are not yet in COLD storage.")
+    if dry_run:
+        for key in keys:
+            click.echo(f"  {key}")
+        return
+
+    if not yes and not click.confirm(
+        f"Move {len(keys)} object(s) to COLD? (COLD storage carries a minimum "
+        "storage duration and per-retrieval fees — check current Yandex Object "
+        "Storage pricing first)"
+    ):
+        raise click.Abort()
+
+    moved = upload.cold_originals(settings, settings.s3_bucket, keys, log=click.echo)
+    click.echo(f"moved {moved} object(s) to COLD storage.")
 
 
 @main.command("setup-bucket")

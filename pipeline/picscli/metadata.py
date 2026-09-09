@@ -32,6 +32,7 @@ _REQUEST_TAGS = [
     "-EXIF:FocalLength",
     "-EXIF:FocalLengthIn35mmFormat",
     "-EXIF:ExposureTime",
+    "-EXIF:ExposureCompensation",
     "-EXIF:FNumber",
     "-EXIF:ISO",
     "-EXIF:Orientation",
@@ -221,5 +222,8 @@ def read_media_metadata(paths: list[Path]) -> dict[Path, MediaMeta]:
             sequence_length=_first_present(raw, config.SONY_SEQUENCE_LENGTH_TAGS),
             drive_mode=_first_present(raw, config.SONY_DRIVE_MODE_TAGS),
             exif=_build_exif_summary(raw, is_video=is_video),
+            release_mode2=raw.get("ReleaseMode2"),
+            exposure_compensation=raw.get("ExposureCompensation"),
+            exposure_time_s=raw.get("ExposureTime"),
         )
     return out

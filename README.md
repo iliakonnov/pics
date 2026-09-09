@@ -1,7 +1,9 @@
 # pics
 
-Import photos/video from a Sony ZV-1, group them into bursts, generate web-sized
-derivatives, and publish a static gallery to Yandex Object Storage (S3-compatible).
+Import raw photos/video from a Sony ZV-1, develop ARW files into full-resolution
+JPEGs with darktable, group everything into bursts, generate web-sized
+derivatives, and publish: full-resolution originals to Yandex Disk, the gallery
+itself to Yandex Object Storage (S3-compatible).
 
 Each album is published to its own directory under an unguessable name and is
 entirely self-contained — its own page, its own copy of the JS/CSS, its own
@@ -35,6 +37,22 @@ Note that `libwebp` alone ships only the library and man pages — the
 Run `pics import` once after installing — it checks all required tools up front
 and fails fast with a clear message if anything is missing.
 
+Only needed when the card has `.ARW` raw files (a JPEG-only import never
+touches these): `darktable-cli` (from **darktable**, tested against 5.6.1)
+and `dcraw_emu` (from **libraw**).
+
+```sh
+sudo pacman -S darktable libraw
+```
+
+If you have a working NVIDIA/AMD GPU, also install the matching OpenCL
+package (e.g. `opencl-nvidia`) and set `PICS_DEVELOP_OPENCL_FIRST=1` once
+you've confirmed `clinfo -l` lists it — darktable's NLM denoiser is a lot
+faster on a GPU. Without a confirmed-working GPU, leave this unset: a
+driver that merely *claims* OpenCL support without a real device behind it
+doesn't make darktable fail, it just makes every frame take minutes instead
+of ~15-30 seconds.
+
 ## 2. Python setup
 
 ```sh
@@ -60,16 +78,25 @@ lines) found in the working directory or any directory above it:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `PICS_LIBRARY` | local archive root (originals + generated files + sqlite state) | `~/Pictures/zv1` |
-| `PICS_S3_BUCKET` | target bucket name | — |
+| `PICS_LIBRARY` | local archive root (working files + sqlite state) | `~/Pictures/zv1` |
+| `PICS_S3_BUCKET` | target bucket name (gallery only — no more originals) | — |
 | `PICS_S3_ACCESS_KEY` / `PICS_S3_SECRET_KEY` | static access key for the bucket | — |
 | `PICS_S3_ENDPOINT` | S3-compatible endpoint | `https://storage.yandexcloud.net` |
 | `PICS_S3_REGION` | | `ru-central1` |
+| `PICS_YADISK_TOKEN` | OAuth token for full-resolution originals | — |
+| `PICS_DEVELOP_OPENCL_FIRST` | try OpenCL before CPU when developing raws (`1` to enable) | `0` |
 
 Create the static key pair for the bucket in the Yandex Cloud console
 (Object Storage → your bucket → for a *service account* with
 `storage.editor`, generate a static access key) and put it in a `.env` file
 (already gitignored) next to where you run `pics`.
+
+For `PICS_YADISK_TOKEN`: register an app at
+[oauth.yandex.ru](https://oauth.yandex.ru/) (or reuse one) with the
+`cloud_api:disk.app_folder` scope, then get a token for it and put it in
+the same `.env` file. Originals live under that app's private folder on
+your Yandex Disk (`Приложения/<app name>/`), one directory per album,
+which the app publishes read-only links into.
 
 ## 4. Usage
 
@@ -78,18 +105,25 @@ Create the static key pair for the bucket in the Yandex Cloud console
 pics setup-bucket
 
 # Import everything on the card as one new album. Work is spread across all
-# cores; -j sets the worker count.
+# cores; -j sets the worker count. ARW files are developed automatically
+# (see below); camera JPEGs alongside an ARW of the same name are skipped.
 pics import /run/media/$USER/SONY_CARD --title "Выходные на море"
 
 # Optional extras, each needing its own heavy dependency:
 #   --best-frame  choose each burst's cover (mediapipe)
 #   --faces       group photos by person and show a face filter (insightface)
+# Raw-develop specific:
+#   --develop-jobs N  parallel darktable-cli instances (default 2 — kept
+#                      separate from -j since darktable is itself
+#                      multi-threaded and memory-hungry)
+#   --redevelop       re-develop every raw frame even if unchanged
+#   --skip-raw        ignore ARW files, import camera JPEGs only
 
 # Look it over locally first, served exactly as it will be published:
 pics preview --port 8000
 
-# Publish it. Prints the share link; --album can be omitted when there is
-# only one local album.
+# Publish it: full-resolution originals to Yandex Disk, the gallery to S3.
+# Prints both links; --album can be omitted when there is only one local album.
 pics upload
 
 pics list
@@ -100,8 +134,18 @@ rm -rf ~/Pictures/zv1/albums/<album-id>
 
 `import` never uploads by itself. `upload` re-uploads the page, JS/CSS and
 album.json unconditionally (they're mutable) and skips media that already
-exists remotely — media is named by content hash, so an existing key is
-always identical content.
+exists remotely — S3 media is named by content hash, so an existing key is
+always identical content; Yandex Disk files are named by camera filename
+and are skipped by an existence check instead (or use `--force`).
+
+Albums published before raw support (originals in S3 COLD storage) keep
+working as-is; nothing migrates automatically. That legacy path is still
+available:
+
+```sh
+pics cold-originals --dry-run   # see what would move, no changes made
+pics cold-originals             # move them (asks for confirmation first)
+```
 
 The album id is the secret: ten random letters (~57 bits), used as both the
 directory name and the share link, so it encodes nothing about the date or
@@ -119,9 +163,13 @@ again later into a fresh album.
 
 ## 5. How it works
 
-- **Scanning** (`picscli/scan.py`) walks the card recursively and keeps only
-  `.jpg`/`.jpeg` and `.mp4/.mov/.mts/.m2ts` files (RAW, THM, and Sony's
-  `.MOFF`/`.MODD` sidecars are ignored by extension).
+- **Scanning** (`picscli/scan.py`) walks the card recursively and keeps
+  `.jpg`/`.jpeg`, `.arw` and `.mp4/.mov/.mts/.m2ts` files (THM and Sony's
+  `.MOFF`/`.MODD` sidecars are ignored by extension). When a camera JPEG
+  and an ARW share a filename — the norm while switching to raw-only
+  shooting — the JPEG is dropped: the ARW gets developed into the album
+  original instead, and keeping both would put two near-identical frames
+  in the same burst.
 - **Metadata** (`picscli/metadata.py`) batch-reads EXIF/QuickTime/MakerNotes
   tags with one `exiftool` call for the whole import.
 - **Grouping** (`picscli/grouping.py`) clusters photos into bursts, preferring
@@ -135,19 +183,44 @@ again later into a fresh album.
   So a burst continues only on a strict +1 step, which correctly splits
   two bursts fired 0.5s apart — something a time gap alone cannot do.
 
+- **Raw development** (`picscli/develop.py`, `rawanalysis.py`, `developplan.py`),
+  when the card has ARW files, runs after grouping and before conversion:
+  darktable-cli renders each raw into `originals/<hash>.jpg` — the album's
+  full-resolution original — using a fixed base look (embedded lens
+  correction, profiled non-local-means denoising in ISO-auto mode, sigmoid
+  tone mapping, an AA-filter sharpen) plus one **auto-exposure correction
+  per burst**: a cheap `dcraw_emu` decode gives a raw histogram, from which
+  an EV is derived and shared by every frame of the burst — so lighting
+  never jumps between shots of the same moment. Singles get their own EV.
+
+  **Exposure-bracketed bursts are detected** (Sony's `ReleaseMode2`
+  MakerNote, verified against a real bracketed set: value `2` with
+  `ExposureCompensation` cycling across frames) and are developed frame by
+  frame instead — no shared EV, since the whole point of a bracket is
+  different exposures. They stay one scrollable burst in the gallery but
+  are skipped for the animated preview, the real-time clip, and
+  `--best-frame` cover scoring, since comparing sharpness or blink across
+  wildly different exposures is meaningless.
+
+  Re-running `import` skips frames whose raw analysis, EV and rendering
+  settings haven't changed (cached in `develop.cache.json`), so a resumed
+  or repeated import costs seconds rather than re-running darktable.
+  `--redevelop` forces it anyway.
+
 - **Conversion** (`picscli/imaging.py`), run across all cores — each
   subprocess is pinned to a single thread (`MAGICK_THREAD_LIMIT`), so the
   worker pool is the only source of parallelism rather than fighting
-  ImageMagick's own: originals are
-  losslessly re-encoded to progressive JPEG (`jpegtran`, full EXIF kept,
-  pixels unchanged); a ~2560px "display" JPEG, a ~1280px "medium" copy and a
-  ~480px thumbnail are generated
+  ImageMagick's own: camera-JPEG originals are losslessly re-encoded to
+  progressive JPEG (`jpegtran`, full EXIF kept, pixels unchanged) — raw
+  originals already exist at this point, written by the develop stage
+  above; a ~2560px "display" JPEG, a ~1280px "medium" copy and a ~480px
+  thumbnail are generated from whichever original applies
   (auto-oriented, EXIF stripped from these derivatives only); an animated
   WebP preview is built from the burst's own thumbnails (photos) or from
   frames sampled across the clip (video) whenever there's more than one
   frame to show. Video is transcoded to 1080p H.264/AAC with
-  `+faststart`; the original video file is archived and published as-is
-  alongside it.
+  `+faststart` for in-browser playback; the untouched source video file is
+  staged for Yandex Disk alongside it.
   Three sizes rather than two because of what a burst costs. At display
   size an average frame is 439KB, so a 24-frame burst is 10MB — and, worse,
   ~17MB *decoded* per frame, or ~420MB resident for the burst. The 1280px
@@ -197,9 +270,18 @@ again later into a fresh album.
   the answer — change either and they recompute, change neither and a
   re-import costs 39s instead of 242s. Cache files are never uploaded.
 
-- **Publishing** (`picscli/upload.py`): content-hash-named media gets
-  `Cache-Control: public, max-age=31536000, immutable`; HTML/JSON/JS/CSS get
-  `no-cache`. The bucket is public-read (per your choice — no signed URLs).
+- **Publishing** (`picscli/upload.py`, `picscli/yadisk.py`) splits across two
+  services. Full-resolution originals — the developed/re-encoded JPEG, the
+  source ARW, and the untouched source video — go to a Yandex Disk
+  directory at `app:/<album-id>/`, split into `JPG/`, `RAW/` and `VIDEO/`
+  subdirectories and named by camera filename (`DSC01234.JPG`,
+  `DSC01234.ARW`, ...), which is then published for a public link; `album.json`
+  records that link as `diskUrl`, plus each frame's path(s) under it. The
+  gallery itself (thumbnails, medium/display copies, previews, clips, face
+  crops, transcoded playback video, the page and its JS/CSS) goes to S3:
+  content-hash-named media gets `Cache-Control: public, max-age=31536000,
+  immutable`; HTML/JSON/JS/CSS get `no-cache`. The bucket is public-read
+  (per your choice — no signed URLs).
 
 ## 6. Web app
 
@@ -296,3 +378,10 @@ relying on it.
 - `setup-bucket`'s printed website endpoint URL is a best guess
   (`http://<bucket>.website.yandexcloud.net`); confirm the exact hostname in
   the Yandex Cloud console after running it.
+- Raw development is tuned for the Sony ZV-1 specifically (the base style
+  assumes its embedded lens-correction metadata and its darktable noise
+  profiles); a different camera would need its own `data/zv1_base.xmp`-equivalent.
+- The exposure-bracket `ReleaseMode2` value is confirmed against one real
+  bracketed burst; a heuristic (cycling `ExposureCompensation`/shutter speed)
+  covers firmware variants that might report bracketing differently, but
+  hasn't itself been exercised against a real bracket.

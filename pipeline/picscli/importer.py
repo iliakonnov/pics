@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import album as album_mod
-from . import cache, config, faces as faces_mod, grouping, imaging, metadata, quality, scan
+from . import cache, config, develop, developplan, faces as faces_mod, grouping, imaging, metadata, quality, rawanalysis, scan
 from .manifest import Manifest
 from .mediameta import MediaMeta
 
@@ -79,28 +79,45 @@ def make_album_id(_first_item: MediaMeta | None = None) -> str:
     return "".join(secrets.choice(string.ascii_letters) for _ in range(ALBUM_ID_LENGTH))
 
 
-def _process_photo_frame(item: MediaMeta, album_dir: Path) -> album_mod.Frame:
+def _process_photo_frame(item: MediaMeta, album_dir: Path) -> tuple[album_mod.Frame, tuple[int, int]]:
     original_rel = f"originals/{item.file_hash}.jpg"
     thumb_rel = f"thumb/{item.file_hash}.webp"
     display_rel = f"display/{item.file_hash}.jpg"
     medium_rel = f"medium/{item.file_hash}.webp"
 
     original_path = album_dir / original_rel
-    if not original_path.exists():
-        imaging.to_progressive_jpeg(item.path, original_path)
+    width, height = item.width, item.height
+    if item.is_raw:
+        raw_path = album_dir / f"raw/{item.file_hash}{item.ext}"
+        if not raw_path.exists():
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item.path, raw_path)
+        # The develop wave (run before this pool) already wrote the
+        # developed JPEG here; derivatives are built from it rather than
+        # re-decoding the ARW, and its pixel dimensions (post lens-correction
+        # crop) replace the ARW's own EXIF-reported size, which can be off
+        # by the crop margin.
+        if not original_path.exists():
+            raise RuntimeError(f"developed original missing for {item.path.name} -- develop stage failed?")
+        width, height = imaging.image_dimensions(original_path)
+        src = original_path
+    else:
+        if not original_path.exists():
+            imaging.to_progressive_jpeg(item.path, original_path)
+        src = item.path
 
     thumb_path = album_dir / thumb_rel
     if not thumb_path.exists():
-        imaging.make_thumb(item.path, thumb_path)
+        imaging.make_thumb(src, thumb_path)
     thumb_w, thumb_h = imaging.image_dimensions(thumb_path)
 
     display_path = album_dir / display_rel
     if not display_path.exists():
-        imaging.make_display_jpeg(item.path, display_path)
+        imaging.make_display_jpeg(src, display_path)
 
     medium_path = album_dir / medium_rel
     if not medium_path.exists():
-        imaging.make_medium(item.path, medium_path)
+        imaging.make_medium(src, medium_path)
 
     return album_mod.Frame(
         hash=item.file_hash,
@@ -110,11 +127,22 @@ def _process_photo_frame(item: MediaMeta, album_dir: Path) -> album_mod.Frame:
         display=display_rel,
         medium=medium_rel,
         video=None,
-        width=item.width,
-        height=item.height,
+        width=width,
+        height=height,
         size_bytes=original_path.stat().st_size,
         exif=item.exif,
     ), (thumb_w, thumb_h)
+
+
+def _frame_disk_paths(item: MediaMeta, camera_name: str) -> dict:
+    """Where this frame's full-resolution file(s) live under the album's
+    Yandex Disk directory, keyed by camera filename (see developplan.disk_names)."""
+    if item.kind == "video":
+        return {"video": f"VIDEO/{camera_name}"}
+    if item.is_raw:
+        jpg_name = Path(camera_name).with_suffix(".JPG").name
+        return {"jpg": f"JPG/{jpg_name}", "raw": f"RAW/{camera_name}"}
+    return {"jpg": f"JPG/{camera_name}"}
 
 
 def _process_video_frame(item: MediaMeta, album_dir: Path) -> tuple[album_mod.Frame, tuple[int, int]]:
@@ -229,6 +257,9 @@ def run_import(
     group_faces: bool = False,
     pick_covers: bool = False,
     max_faces: int = config.FACE_MAX_IDENTITIES,
+    develop_jobs: int | None = None,
+    redevelop: bool = False,
+    skip_raw: bool = False,
     log: Logger = _default_log,
 ) -> str:
     jobs = jobs or default_jobs()
@@ -238,8 +269,15 @@ def run_import(
         raise RuntimeError("missing required tools:\n" + "\n".join(f"  - {e}" for e in tool_errors))
 
     files = scan.find_media_files(card_root)
+    if skip_raw:
+        files = [p for p in files if p.suffix.lower() not in config.RAW_EXTENSIONS]
+    else:
+        before = len(files)
+        files = scan.drop_jpeg_when_raw_sibling(files)
+        if before != len(files):
+            log(f"  dropped {before - len(files)} camera JPEG(s) with a raw sibling")
     if not files:
-        raise RuntimeError(f"no JPEG/video files found under {card_root}")
+        raise RuntimeError(f"no JPEG/RAW/video files found under {card_root}")
     log(f"found {len(files)} file(s)")
 
     log("reading metadata (exiftool)...")
@@ -279,6 +317,91 @@ def run_import(
         album_dir = settings.album_dir(resolved_album_id)
         bursts: list[album_mod.Burst] = []
 
+        # Raw development (ARW -> originals/<hash>.jpg) runs as its own wave
+        # here, after grouping (so a burst's frames can share one exposure
+        # correction) and before the flat conversion pool below (which
+        # assumes originals/ already exists for raw frames).
+        bracketed_groups: set[int] = set()
+        template_fp: str | None = None
+        raw_items = [i for i in kept_items if i.is_raw]
+        if raw_items:
+            develop_errors = develop.check_available()
+            if develop_errors:
+                raise RuntimeError("missing raw-develop tools:\n" + "\n".join(f"  - {e}" for e in develop_errors))
+
+            dev_cache_path = cache.path_for(album_dir, "develop")
+            dev_key = cache.fingerprint({"analyzer": rawanalysis.ANALYZER_VERSION})
+            remembered_dev = cache.load(dev_cache_path, dev_key)
+            ev_by_hash: dict[str, float] = dict(remembered_dev["evByHash"]) if remembered_dev else {}
+            developed_records: dict[str, dict] = dict(remembered_dev["developed"]) if remembered_dev else {}
+
+            to_analyze = [f for f in developplan.frames_to_analyze(groups) if f.file_hash not in ev_by_hash]
+            if to_analyze:
+                log(f"analyzing exposure for {len(to_analyze)} raw frame(s)...")
+                analyzed = _run_parallel(
+                    to_analyze, lambda f: rawanalysis.estimate_ev(f.path), jobs, label="analyzed", log=log
+                )
+                for i, f in enumerate(to_analyze):
+                    ev_by_hash[f.file_hash] = analyzed[i] if analyzed[i] is not None else 0.0
+                cache.save(dev_cache_path, dev_key, {"evByHash": ev_by_hash, "developed": developed_records})
+
+            plans, bracketed_groups = developplan.build_develop_plans(groups, ev_by_hash)
+            template_fp = develop.template_fingerprint()
+
+            def _needs_develop(plan: developplan.FramePlan) -> bool:
+                original_path = album_dir / f"originals/{plan.file_hash}.jpg"
+                if redevelop or not original_path.exists():
+                    return True
+                record = developed_records.get(plan.file_hash)
+                if record is None or record.get("params") != template_fp:
+                    return True
+                return abs(record.get("ev", 0.0) - plan.ev) > config.DEVELOP_EV_EPSILON
+
+            to_develop = [p for p in plans.values() if _needs_develop(p)]
+            if to_develop:
+                # Cascade: anything about to be (re)developed must rebuild
+                # its derivatives and its burst's preview/clip too.
+                redeveloping = {p.file_hash for p in to_develop}
+                for gi, group in enumerate(groups):
+                    if not ({f.file_hash for f in group if f.is_raw} & redeveloping):
+                        continue
+                    for f in group:
+                        for rel in (
+                            f"display/{f.file_hash}.jpg",
+                            f"medium/{f.file_hash}.webp",
+                            f"thumb/{f.file_hash}.webp",
+                        ):
+                            (album_dir / rel).unlink(missing_ok=True)
+                    bid = f"b{gi:04d}"
+                    (album_dir / f"preview/{bid}.webp").unlink(missing_ok=True)
+                    (album_dir / f"clip/{bid}.mp4").unlink(missing_ok=True)
+
+                save_lock = threading.Lock()
+                completed = 0
+
+                def _develop_one(plan: developplan.FramePlan):
+                    nonlocal completed
+                    dest = album_dir / f"originals/{plan.file_hash}.jpg"
+                    result = develop.develop(plan.path, plan.ev, dest, jobs=develop_jobs or config.DEVELOP_JOBS)
+                    if not result.ok:
+                        raise RuntimeError(f"failed to develop {plan.path.name}: {result.error}")
+                    if result.used_fallback:
+                        log(f"  {plan.path.name}: developed via fallback ({result.used_fallback})")
+                    with save_lock:
+                        developed_records[plan.file_hash] = {"ev": plan.ev, "params": template_fp}
+                        completed += 1
+                        if completed % 25 == 0:
+                            cache.save(dev_cache_path, dev_key, {"evByHash": ev_by_hash, "developed": developed_records})
+                    return result
+
+                log(f"developing {len(to_develop)} raw frame(s) on {develop_jobs or config.DEVELOP_JOBS} worker(s)...")
+                _run_parallel(to_develop, _develop_one, develop_jobs or config.DEVELOP_JOBS, label="developed", log=log)
+                cache.save(dev_cache_path, dev_key, {"evByHash": ev_by_hash, "developed": developed_records})
+            else:
+                log("develop: reusing all previously developed originals (nothing changed)")
+
+        disk_names_map = developplan.disk_names(kept_items)
+
         # Convert every frame first, across all bursts at once: the work is
         # per-file and independent, so one flat pool keeps every core busy
         # instead of stalling on bursts that happen to be short.
@@ -297,6 +420,7 @@ def run_import(
         dims_by_group: dict[int, tuple[int, int]] = {}
         for i, (gi, fi, item) in enumerate(flat):
             frame, dims = converted[i]
+            frame.disk = _frame_disk_paths(item, disk_names_map[item.file_hash])
             frames_by_group.setdefault(gi, {})[fi] = frame
             if fi == 0:
                 dims_by_group[gi] = dims
@@ -313,10 +437,12 @@ def run_import(
             db.mark_processed(item.file_hash)
 
         # Previews depend on the thumbnails above, so they form a second wave.
+        # Exposure-bracketed bursts are skipped: a preview strobing between
+        # wildly different exposures reads as broken, not useful.
         preview_tasks = [
             (gi, group, [frames_by_group[gi][fi] for fi in sorted(frames_by_group[gi])])
             for gi, group in enumerate(groups)
-            if len(group) > 1 or group[0].kind == "video"
+            if (len(group) > 1 or group[0].kind == "video") and gi not in bracketed_groups
         ]
         log(f"building {len(preview_tasks)} animated preview(s)...")
         previews = _run_parallel(
@@ -330,11 +456,13 @@ def run_import(
 
         # Bursts worth watching as a clip: long enough in real time that
         # playing them back at true speed actually shows the motion.
+        # Exposure brackets are excluded for the same reason as previews.
         clip_tasks = [
             (gi, group, [frames_by_group[gi][fi] for fi in sorted(frames_by_group[gi])])
             for gi, group in enumerate(groups)
             if group[0].kind == "photo"
             and len(group) > 1
+            and gi not in bracketed_groups
             and burst_real_seconds(group) >= mp4_min_seconds
         ]
         if clip_tasks:
@@ -348,13 +476,16 @@ def run_import(
         )
         clip_by_group = {clip_tasks[i][0]: rel for i, rel in clips.items()}
 
-        # Which frame of each burst to show as its cover.
+        # Which frame of each burst to show as its cover. Exposure brackets
+        # are excluded: comparing sharpness/blink across frames shot at
+        # different exposures is meaningless, so they keep cover 0 (the
+        # metered/0-EV frame in Sony's bracket order).
         covers: dict[int, int] = {}
         if pick_covers and quality.available():
             cover_scoring_bursts = [
                 (f"b{gi:04d}", [frames_by_group[gi][fi].hash for fi in sorted(frames_by_group[gi])])
                 for gi, group in enumerate(groups)
-                if group[0].kind == "photo" and len(group) > 1
+                if group[0].kind == "photo" and len(group) > 1 and gi not in bracketed_groups
             ]
             cover_key = cache.fingerprint(
                 {
@@ -362,6 +493,7 @@ def run_import(
                     "scale": config.QUALITY_SCAN_SCALE,
                     "bands": list(config.QUALITY_BLINK_BANDS),
                     "max_faces": config.QUALITY_MAX_FACES,
+                    "develop_params": template_fp,
                 }
             )
             cover_cache = cache.path_for(album_dir, "covers")
@@ -377,7 +509,7 @@ def run_import(
                 (gi, [album_dir / frames_by_group[gi][fi].display
                       for fi in sorted(frames_by_group[gi]) if frames_by_group[gi][fi].display])
                 for gi, group in enumerate(groups)
-                if group[0].kind == "photo" and len(group) > 1
+                if group[0].kind == "photo" and len(group) > 1 and gi not in bracketed_groups
             ]
             log(f"choosing a cover for {len(scoring)} burst(s)...")
             scored = _run_parallel(
