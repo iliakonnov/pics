@@ -61,6 +61,16 @@ class YandexDisk:
             if response.status_code not in (201, 409):
                 raise YandexDiskError(f"failed to create directory {current}: {response.status_code} {response.text[:200]}")
 
+    def delete(self, path: str, *, permanently: bool = True) -> None:
+        """Remove a file or directory (default: skip the trash -- these are
+        machine-managed album directories, not something a person would
+        want to dig out of Disk's trash later)."""
+        response = self._request(
+            "DELETE", f"{_BASE_URL}/resources", params={"path": path, "permanently": str(permanently).lower()}
+        )
+        if response.status_code not in (202, 204, 404):
+            raise YandexDiskError(f"failed to delete {path}: {response.status_code} {response.text[:200]}")
+
     def exists(self, path: str) -> bool:
         response = self._request("GET", f"{_BASE_URL}/resources", params={"path": path, "fields": "name"})
         if response.status_code == 200:
