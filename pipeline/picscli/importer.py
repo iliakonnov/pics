@@ -382,7 +382,11 @@ def run_import(
                 def _develop_one(plan: developplan.FramePlan):
                     nonlocal completed
                     dest = album_dir / f"originals/{plan.file_hash}.jpg"
-                    result = develop.develop(plan.path, plan.ev, dest, jobs=develop_jobs or config.DEVELOP_JOBS)
+                    result = develop.develop(
+                        plan.path, plan.ev, dest,
+                        focal_mm=plan.focal_mm, aperture=plan.aperture,
+                        jobs=develop_jobs or config.DEVELOP_JOBS,
+                    )
                     if not result.ok:
                         raise RuntimeError(f"failed to develop {plan.path.name}: {result.error}")
                     if result.used_fallback:
@@ -438,11 +442,20 @@ def run_import(
 
         # Previews depend on the thumbnails above, so they form a second wave.
         # Exposure-bracketed bursts are skipped: a preview strobing between
-        # wildly different exposures reads as broken, not useful.
+        # wildly different exposures reads as broken, not useful. A photo
+        # burst also needs to clear the same real-time-seconds bar as a
+        # clip (see clip_tasks below): a burst too short for a clip just
+        # flickers between a couple of near-identical frames on hover,
+        # which reads as noise rather than a preview. Video bursts have no
+        # competing "clip" concept, so they always get one.
         preview_tasks = [
             (gi, group, [frames_by_group[gi][fi] for fi in sorted(frames_by_group[gi])])
             for gi, group in enumerate(groups)
-            if (len(group) > 1 or group[0].kind == "video") and gi not in bracketed_groups
+            if gi not in bracketed_groups
+            and (
+                group[0].kind == "video"
+                or (len(group) > 1 and burst_real_seconds(group) >= mp4_min_seconds)
+            )
         ]
         log(f"building {len(preview_tasks)} animated preview(s)...")
         previews = _run_parallel(

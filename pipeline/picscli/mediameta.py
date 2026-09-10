@@ -27,6 +27,7 @@ class MediaMeta:
     release_mode2: int | None = None
     exposure_compensation: float | None = None
     exposure_time_s: float | None = None
+    focal_length_mm: float | None = None
 
     @property
     def ext(self) -> str:

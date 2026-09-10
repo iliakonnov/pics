@@ -216,9 +216,9 @@ again later into a fresh album.
   above; a ~2560px "display" JPEG, a ~1280px "medium" copy and a ~480px
   thumbnail are generated from whichever original applies
   (auto-oriented, EXIF stripped from these derivatives only); an animated
-  WebP preview is built from the burst's own thumbnails (photos) or from
-  frames sampled across the clip (video) whenever there's more than one
-  frame to show. Video is transcoded to 1080p H.264/AAC with
+  WebP preview is built from the burst's own thumbnails (photos, only when
+  the burst also clears `--mp4-min-seconds` — see below) or from frames
+  sampled across the clip (video, always). Video is transcoded to 1080p H.264/AAC with
   `+faststart` for in-browser playback; the untouched source video file is
   staged for Yandex Disk alongside it.
   Three sizes rather than two because of what a burst costs. At display

@@ -14,7 +14,7 @@ from picscli.mediameta import MediaMeta
 BASE = datetime(2026, 8, 30, 14, 11, 25)
 
 
-def raw(n, *, dt, seq_num=None, release_mode2=None, bias=None, exposure_time=None, iso=125, fnumber=1.8):
+def raw(n, *, dt, seq_num=None, release_mode2=None, bias=None, exposure_time=None, iso=125, fnumber=1.8, focal=None):
     return MediaMeta(
         path=Path(f"/card/DSC{n:05d}.ARW"),
         kind="photo",
@@ -31,6 +31,7 @@ def raw(n, *, dt, seq_num=None, release_mode2=None, bias=None, exposure_time=Non
         release_mode2=release_mode2,
         exposure_compensation=bias,
         exposure_time_s=exposure_time,
+        focal_length_mm=focal,
     )
 
 
@@ -249,3 +250,32 @@ def test_disk_names_disambiguates_collisions_by_hash():
     names = disk_names([a, b])
     assert names["aaa111"] == "DSC01234.ARW"
     assert names["bbb222"] == "DSC01234_bbb222.ARW"
+
+
+# --- focal_mm / aperture plumbing (Lensfun distortion correction) -----------
+
+
+def test_plan_uses_this_frames_own_focal_length_not_shared():
+    # Unlike EV, focal length is never shared across a burst -- each frame
+    # keeps its own zoom position.
+    groups = [
+        [
+            raw(1, dt=BASE, seq_num=1, release_mode2=1, focal=9.4),
+            raw(2, dt=BASE + timedelta(milliseconds=95), seq_num=2, release_mode2=1, focal=9.4),
+            raw(3, dt=BASE + timedelta(milliseconds=195), seq_num=3, release_mode2=1, focal=9.4),
+        ]
+    ]
+    plans, _ = build_develop_plans(groups, {"hash1": 0.0, "hash2": 0.0, "hash3": 0.0})
+    assert plans["hash1"].focal_mm == pytest.approx(9.4)
+
+
+def test_plan_carries_aperture_from_exif():
+    groups = [[raw(1, dt=BASE, focal=18.2, fnumber=2.8)]]
+    plans, _ = build_develop_plans(groups, {"hash1": 0.0})
+    assert plans["hash1"].aperture == pytest.approx(2.8)
+
+
+def test_plan_falls_back_to_wide_end_when_focal_length_missing():
+    groups = [[raw(1, dt=BASE, focal=None)]]
+    plans, _ = build_develop_plans(groups, {"hash1": 0.0})
+    assert plans["hash1"].focal_mm == pytest.approx(9.4)

@@ -30,6 +30,12 @@ class FramePlan:
     path: Path
     ev: float
     bracketed: bool
+    # This frame's own zoom position/aperture (never shared across a burst,
+    # unlike ev): the ZV-1's Lensfun distortion correction depends heavily
+    # on focal length, and reading it is a free EXIF field, not an
+    # expensive raw-pixel analysis like exposure is.
+    focal_mm: float
+    aperture: float | None
 
 
 def _heuristic_bracket(group: list[MediaMeta]) -> bool:
@@ -109,15 +115,22 @@ def build_develop_plans(
         if bracketed:
             bracketed_groups.add(gi)
 
+        def _plan_for(f: MediaMeta, ev: float, bracketed: bool) -> FramePlan:
+            focal_mm = f.focal_length_mm if f.focal_length_mm else config.DEVELOP_FALLBACK_FOCAL_MM
+            return FramePlan(
+                file_hash=f.file_hash, path=f.path, ev=ev, bracketed=bracketed,
+                focal_mm=focal_mm, aperture=f.exif.get("fNumber"),
+            )
+
         if bracketed or len(raw_frames) == 1:
             for f in raw_frames:
                 ev = ev_by_hash.get(f.file_hash, 0.0)
-                plans[f.file_hash] = FramePlan(file_hash=f.file_hash, path=f.path, ev=ev, bracketed=bracketed)
+                plans[f.file_hash] = _plan_for(f, ev, bracketed)
         else:
             sampled_evs = [ev_by_hash[f.file_hash] for f in raw_frames if f.file_hash in ev_by_hash]
             shared_ev = rawanalysis.combine_burst_evs(sampled_evs) if sampled_evs else 0.0
             for f in raw_frames:
-                plans[f.file_hash] = FramePlan(file_hash=f.file_hash, path=f.path, ev=shared_ev, bracketed=False)
+                plans[f.file_hash] = _plan_for(f, shared_ev, False)
 
     return plans, bracketed_groups
 

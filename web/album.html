@@ -26,13 +26,18 @@
     <a id="viewer-clip" class="text-btn" target="_blank" rel="noopener" hidden
        aria-label="Открыть серию видеофайлом в новой вкладке"
        title="Открыть серию видеофайлом в новой вкладке (в реальной скорости)">MP4</a>
-    <a id="viewer-raw" class="text-btn" target="_blank" rel="noopener" hidden
-       aria-label="Открыть RAW-файл в новой вкладке"
-       title="Открыть исходный RAW-файл в новой вкладке">RAW</a>
-    <a id="viewer-download" class="icon-btn" target="_blank" rel="noopener"
-       aria-label="Открыть оригинал в новой вкладке" title="Открыть оригинал в новой вкладке">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m-4-3.5L12 15l4-4.5M5 19h14"/></svg>
-    </a>
+    <div id="viewer-download-dropdown" class="dropdown">
+      <button id="viewer-download-toggle" class="icon-btn" type="button"
+              aria-haspopup="true" aria-expanded="false"
+              aria-label="Скачать оригинал" title="Скачать оригинал">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m-4-3.5L12 15l4-4.5M5 19h14"/></svg>
+      </button>
+      <div id="viewer-download-menu" class="dropdown-menu" role="menu" hidden>
+        <a id="viewer-download-jpg" class="dropdown-item" target="_blank" rel="noopener" role="menuitem" hidden>JPG</a>
+        <a id="viewer-download-raw" class="dropdown-item" target="_blank" rel="noopener" role="menuitem" hidden>RAW</a>
+        <a id="viewer-download-video" class="dropdown-item" target="_blank" rel="noopener" role="menuitem" hidden>Видео</a>
+      </div>
+    </div>
   </div>
   <div id="viewer-stage" class="viewer-stage">
     <button id="viewer-prev-burst" class="nav-btn nav-prev" aria-label="Предыдущая серия" type="button">

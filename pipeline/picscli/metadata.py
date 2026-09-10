@@ -225,5 +225,6 @@ def read_media_metadata(paths: list[Path]) -> dict[Path, MediaMeta]:
             release_mode2=raw.get("ReleaseMode2"),
             exposure_compensation=raw.get("ExposureCompensation"),
             exposure_time_s=raw.get("ExposureTime"),
+            focal_length_mm=raw.get("FocalLength"),
         )
     return out

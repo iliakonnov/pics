@@ -178,6 +178,9 @@ DEVELOP_SAMPLE_FRAMES = 3
 # A burst's shared EV is only recomputed (triggering redevelopment) if it
 # drifts from the cached value by more than this.
 DEVELOP_EV_EPSILON = 0.05
+# Used only if a raw file is somehow missing its own FocalLength EXIF
+# (shouldn't happen on this camera): the wide end of its 9.4-25.7mm zoom.
+DEVELOP_FALLBACK_FOCAL_MM = 9.4
 
 
 @dataclass(slots=True)

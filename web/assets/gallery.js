@@ -58,7 +58,13 @@ export function renderBurstGrid(container, bursts, { onOpen }) {
     layoutItems.push({ el: tile, aspect: (burst.thumbW || 3) / (burst.thumbH || 2) });
     tileOf.set(burst.id, layoutItems[layoutItems.length - 1]);
 
-    if (burst.preview) {
+    // A photo burst's animated preview is only worth showing if there's
+    // also a real-time clip to actually watch -- a burst too short for one
+    // (see --mp4-min-seconds) just flickers between a couple of
+    // near-identical frames on hover, which reads as noise rather than a
+    // preview. Video bursts have no competing "clip" concept, so their
+    // preview (sampled from the source clip) always shows.
+    if (burst.preview && (burst.type === "video" || burst.clip)) {
       const preview = el("img", { class: "preview", alt: "" });
       preview.style.display = "none";
       tile.append(preview);

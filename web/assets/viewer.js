@@ -40,8 +40,11 @@ export function initViewer(bursts, diskUrl) {
   const root = document.getElementById("viewer");
   const closeBtn = document.getElementById("viewer-close");
   const info = document.getElementById("viewer-info");
-  const downloadLink = document.getElementById("viewer-download");
-  const rawLink = document.getElementById("viewer-raw");
+  const downloadToggle = document.getElementById("viewer-download-toggle");
+  const downloadMenu = document.getElementById("viewer-download-menu");
+  const downloadJpgLink = document.getElementById("viewer-download-jpg");
+  const downloadRawLink = document.getElementById("viewer-download-raw");
+  const downloadVideoLink = document.getElementById("viewer-download-video");
   const clipLink = document.getElementById("viewer-clip");
   const stage = document.getElementById("viewer-stage");
   const prevBurstBtn = document.getElementById("viewer-prev-burst");
@@ -259,18 +262,34 @@ export function initViewer(bursts, diskUrl) {
 
     // Full-resolution files live on Yandex Disk once the album is
     // published; frame.original (a local relative path) is the fallback
-    // for local preview and for albums published before the move.
+    // for local preview and for albums published before the move (JPG/
+    // video only -- RAW never had a local download story, so it only
+    // appears once the album is actually published).
     const disk = frame.disk || {};
-    downloadLink.href = diskUrl && disk.jpg ? `${diskUrl}/${disk.jpg}` : frame.original;
+    closeDownloadMenu();
 
-    if (rawLink) {
-      if (diskUrl && disk.raw) {
-        rawLink.hidden = false;
-        rawLink.href = `${diskUrl}/${disk.raw}`;
-      } else {
-        rawLink.hidden = true;
-        rawLink.removeAttribute("href");
-      }
+    if (disk.jpg) {
+      downloadJpgLink.hidden = false;
+      downloadJpgLink.href = diskUrl ? `${diskUrl}/${disk.jpg}` : frame.original;
+    } else {
+      downloadJpgLink.hidden = true;
+      downloadJpgLink.removeAttribute("href");
+    }
+
+    if (diskUrl && disk.raw) {
+      downloadRawLink.hidden = false;
+      downloadRawLink.href = `${diskUrl}/${disk.raw}`;
+    } else {
+      downloadRawLink.hidden = true;
+      downloadRawLink.removeAttribute("href");
+    }
+
+    if (disk.video) {
+      downloadVideoLink.hidden = false;
+      downloadVideoLink.href = diskUrl ? `${diskUrl}/${disk.video}` : frame.original;
+    } else {
+      downloadVideoLink.hidden = true;
+      downloadVideoLink.removeAttribute("href");
     }
 
     // Bursts long enough to be worth watching get a real-time clip.
@@ -610,6 +629,30 @@ export function initViewer(bursts, diskUrl) {
     );
   }
 
+  // -- download dropdown ------------------------------------------------
+
+  function closeDownloadMenu() {
+    downloadMenu.hidden = true;
+    downloadToggle.setAttribute("aria-expanded", "false");
+  }
+
+  function toggleDownloadMenu() {
+    const opening = downloadMenu.hidden;
+    downloadMenu.hidden = !opening;
+    downloadToggle.setAttribute("aria-expanded", String(opening));
+  }
+
+  downloadToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleDownloadMenu();
+  });
+  downloadMenu.addEventListener("click", (event) => {
+    if (event.target.tagName === "A") closeDownloadMenu();
+  });
+  document.addEventListener("click", (event) => {
+    if (!downloadMenu.hidden && !event.target.closest("#viewer-download-dropdown")) closeDownloadMenu();
+  });
+
   // -- other input ----------------------------------------------------
 
   closeBtn.addEventListener("click", close);
@@ -628,7 +671,10 @@ export function initViewer(bursts, diskUrl) {
 
   window.addEventListener("keydown", (event) => {
     if (!isOpen) return;
-    if (event.key === "Escape") close();
+    if (event.key === "Escape") {
+      if (!downloadMenu.hidden) closeDownloadMenu();
+      else close();
+    }
     else if (event.key === "ArrowUp") { event.preventDefault(); prevFrame(); }
     else if (event.key === "ArrowDown") { event.preventDefault(); nextFrame(); }
     else if (event.key === "ArrowLeft") prevBurst();

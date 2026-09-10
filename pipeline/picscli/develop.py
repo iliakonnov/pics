@@ -1,15 +1,40 @@
 """Develop a raw ARW into the album's full-resolution JPEG via darktable-cli.
 
-The base look (lens correction from embedded metadata, profiled denoise in
-non-local-means-auto mode, sigmoid tone mapping, an AA-filter sharpen) lives
-in the checked-in XMP template at data/zv1_base.xmp -- built by hand from
-darktable 5.6.1's own module parameter structs (verified against source and
-against real factory presets pulled from its data.db) and confirmed against
-the real binary: rendering the template at EV 0 and EV +2 on a real ZV-1
-ARW shows the expected brightness change and no errors.
+The base look (Lensfun geometric correction, guided-laplacians highlight
+reconstruction, profiled denoise in non-local-means-auto mode, sigmoid tone
+mapping, an AA-filter sharpen) lives in the checked-in XMP template at
+data/zv1_base.xmp -- built by hand from darktable 5.6.1's own module
+parameter structs (verified against source and against real factory
+presets pulled from its data.db) and confirmed against the real binary.
 
-Only the exposure module's EV is patched per image (patch_exposure_ev);
-everything else in the template is a fixed, image-independent default.
+Highlight reconstruction uses "guided laplacians" (mode=3) rather than
+darktable's own per-image default ("inpaint opposed"): opposed is faster
+but can fail where a clipped highlight borders a different color, while
+guided laplacians is built for exactly the small/medium specular highlights
+this camera's night and event shots are full of (streetlights, headlights,
+wet reflections) and is documented as immune to white-balance
+discrepancies. Every field besides `mode` keeps darktable's own compiled-in
+default (128px reconstruction diameter, 30 iterations, recovery off) --
+untuned, since a wrong guess here just costs render time, not correctness.
+
+Lens correction uses Lensfun's camera+lens database (method=LENSFUN), not
+darktable's "embedded metadata" method: the ZV-1 doesn't populate the
+per-shot MakerNote fields darktable's embedded-metadata path reads
+(`Sony:DistortionCorrParamsPresent` is 0 on every real file checked), so
+that method silently no-ops -- confirmed by A/B rendering a real photo with
+a straight building facade: embedded-metadata mode (ours or darktable's own
+auto-picked default) left the facade visibly curved, identical to lens
+correction being fully disabled. A community-contributed Lensfun profile
+for the ZV-1 (mount "sonyZV1") exists but isn't in the Arch-packaged
+database; `lensfun-update-data` fetches it into ~/.local/share/lensfun. See
+check_available(), which fails loudly if that profile can't be found,
+rather than silently rendering uncorrected geometry again.
+
+The exposure module's EV and the lens module's focal length/aperture are
+patched per image (this camera is a 9.4-25.7mm zoom, and Lensfun's
+distortion correction varies a lot across that range -- a=0.046 at the wide
+end vs a=0.030 at the tele end in the calibration data); everything else in
+the template is a fixed, image-independent default.
 """
 
 from __future__ import annotations
@@ -35,6 +60,7 @@ _REQUIRED_OPERATIONS = {
     "exposure": "7",
     "diffuse": "2",
     "sigmoid": "3",
+    "highlights": "4",
 }
 _FORBIDDEN_OPERATIONS = {"temperature", "channelmixerrgb"}
 
@@ -44,6 +70,15 @@ _ATTR_RE = re.compile(r'darktable:(\w+)="([^"]*)"')
 # Offset of the `exposure` float within the 28-byte exposure v7 params
 # struct: mode(i32) black(f32) exposure(f32) ...
 _EXPOSURE_EV_OFFSET = 8
+
+# Offsets within the 356-byte lens v10 params struct: method(i32)
+# modify_flags(i32) inverse(i32) scale(f32) crop(f32) focal(f32)
+# aperture(f32) distance(f32) target_geom(i32) camera[128] lens[128] ...
+_LENS_FOCAL_OFFSET = 20
+_LENS_APERTURE_OFFSET = 24
+_LENS_CAMERA_NAME = "ZV-1"
+_LENS_LENS_NAME = "ZV-1 & compatibles"
+_LENS_CROP_FACTOR = 2.70
 
 
 class TemplateError(Exception):
@@ -102,6 +137,37 @@ def verify_template(template_text: str) -> None:
             "expected a[0]=-1.0, mode=3 (non-local means auto)"
         )
 
+    lens_bytes = bytes.fromhex(by_op["lens"]["params"])
+    if len(lens_bytes) != 356:
+        raise TemplateError(f"lens params are {len(lens_bytes)} bytes, expected 356")
+    method, modify_flags = struct.unpack_from("<ii", lens_bytes, 0)
+    crop = struct.unpack_from("<f", lens_bytes, 16)[0]
+    camera_name = lens_bytes[36:164].split(b"\x00", 1)[0].decode()
+    lens_name = lens_bytes[164:292].split(b"\x00", 1)[0].decode()
+    if method != 1:
+        raise TemplateError(
+            f"lens method is {method}, expected 1 (Lensfun database) -- 'embedded metadata' (0) "
+            "silently no-ops on this camera, see develop.py's module docstring"
+        )
+    if camera_name != _LENS_CAMERA_NAME or lens_name != _LENS_LENS_NAME:
+        raise TemplateError(
+            f"lens camera/lens name is {camera_name!r}/{lens_name!r}, "
+            f"expected {_LENS_CAMERA_NAME!r}/{_LENS_LENS_NAME!r} -- Lensfun won't find the profile"
+        )
+    if abs(crop - _LENS_CROP_FACTOR) > 0.01:
+        raise TemplateError(f"lens crop factor is {crop}, expected {_LENS_CROP_FACTOR}")
+    if not (modify_flags & 4):
+        raise TemplateError("lens modify_flags doesn't include distortion correction")
+
+    highlights_bytes = bytes.fromhex(by_op["highlights"]["params"])
+    if len(highlights_bytes) != 48:
+        raise TemplateError(f"highlights params are {len(highlights_bytes)} bytes, expected 48")
+    highlights_mode = struct.unpack_from("<i", highlights_bytes, 0)[0]
+    if highlights_mode != 3:
+        raise TemplateError(
+            f"highlights mode is {highlights_mode}, expected 3 (guided laplacians)"
+        )
+
 
 def patch_exposure_ev(template_text: str, ev: float) -> str:
     """Return template_text with the exposure module's EV set to `ev`.
@@ -131,6 +197,64 @@ def patch_exposure_ev(template_text: str, ev: float) -> str:
     return template_text[:start] + new_li + template_text[end:]
 
 
+def patch_lens_focal(template_text: str, focal_mm: float, aperture: float | None) -> str:
+    """Return template_text with the lens module's focal length (and
+    aperture, if known) set to this image's actual values.
+
+    The ZV-1 is a 9.4-25.7mm zoom, and Lensfun's distortion correction is
+    calibrated per focal length across that range, so a single fixed value
+    in the template would only be right for one zoom position.
+    """
+    entries = _parse_history_entries(template_text)
+    lens_entries = [e for e in entries if e.get("operation") == "lens"]
+    if len(lens_entries) != 1:
+        raise TemplateError(f"expected exactly one lens entry, found {len(lens_entries)}")
+    entry = lens_entries[0]
+
+    old_hex = entry["params"]
+    raw = bytearray(bytes.fromhex(old_hex))
+    struct.pack_into("<f", raw, _LENS_FOCAL_OFFSET, focal_mm)
+    if aperture:
+        struct.pack_into("<f", raw, _LENS_APERTURE_OFFSET, aperture)
+    new_hex = bytes(raw).hex()
+
+    start, end = entry["_span"]
+    old_li = template_text[start:end]
+    old_attr = f'darktable:params="{old_hex}"'
+    if old_attr not in old_li:
+        raise TemplateError("failed to patch the lens params attribute")
+    new_li = old_li.replace(old_attr, f'darktable:params="{new_hex}"')
+    return template_text[:start] + new_li + template_text[end:]
+
+
+def _lensfun_database_files() -> list[Path]:
+    roots = [
+        Path("/usr/share/lensfun"),
+        Path("/usr/share/lensfun-updates"),
+        Path.home() / ".local/share/lensfun",
+    ]
+    files = []
+    for root in roots:
+        if root.is_dir():
+            files.extend(root.rglob("*.xml"))
+    return files
+
+
+def check_lensfun_zv1_profile() -> bool:
+    """Whether some installed Lensfun database file has a ZV-1 lens
+    profile. The Arch-packaged database doesn't (as of this writing);
+    `lensfun-update-data` fetches the community-contributed one that does."""
+    # The XML escapes "&" as "&amp;" ("ZV-1 & compatibles" in the database).
+    needle = f"<model>{_LENS_LENS_NAME}</model>".replace("&", "&amp;").encode()
+    for path in _lensfun_database_files():
+        try:
+            if needle in path.read_bytes():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def template_fingerprint() -> str:
     version = _darktable_version()
     text = TEMPLATE_PATH.read_text()
@@ -148,6 +272,11 @@ def check_available() -> list[str]:
         errors.append(f"'{config.DARKTABLE_BIN}' (darktable-cli) not found on PATH")
     if shutil.which(config.DCRAW_EMU_BIN) is None:
         errors.append(f"'{config.DCRAW_EMU_BIN}' (dcraw_emu, from LibRaw) not found on PATH")
+    if not check_lensfun_zv1_profile():
+        errors.append(
+            "no Lensfun profile for the Sony ZV-1 found -- the packaged database doesn't have one; "
+            "run `lensfun-update-data` to fetch the community-contributed one, then retry"
+        )
     if not TEMPLATE_PATH.is_file():
         errors.append(f"missing raw-develop template: {TEMPLATE_PATH}")
     else:
@@ -213,8 +342,20 @@ def _extract_embedded_preview(arw: Path, dst: Path) -> bool:
     return True
 
 
-def develop(arw: Path, ev: float, dst: Path, *, jobs: int = config.DEVELOP_JOBS) -> DevelopResult:
+def develop(
+    arw: Path,
+    ev: float,
+    dst: Path,
+    *,
+    focal_mm: float,
+    aperture: float | None = None,
+    jobs: int = config.DEVELOP_JOBS,
+) -> DevelopResult:
     """Develop `arw` into a progressive JPEG at `dst`, atomically.
+
+    `focal_mm` (this shot's actual focal length) drives the lens module's
+    Lensfun distortion correction, which varies a lot across the ZV-1's
+    zoom range -- there is no sensible fixed default.
 
     `jobs` is how many of these run concurrently (the importer's
     --develop-jobs), used only to divide CPU threads evenly between
@@ -227,6 +368,7 @@ def develop(arw: Path, ev: float, dst: Path, *, jobs: int = config.DEVELOP_JOBS)
     start = time.monotonic()
     dst.parent.mkdir(parents=True, exist_ok=True)
     template_text = patch_exposure_ev(TEMPLATE_PATH.read_text(), ev)
+    template_text = patch_lens_focal(template_text, focal_mm, aperture)
 
     with tempfile.TemporaryDirectory(prefix="pics-develop-") as tmp_str:
         tmp = Path(tmp_str)
@@ -284,12 +426,21 @@ def run_selftest(sample_arw: Path) -> None:
     on purpose), so this only checks for a clear, sane increase.
     """
     verify_template(TEMPLATE_PATH.read_text())
+    focal_result = subprocess.run(
+        [config.EXIFTOOL_BIN, "-n", "-T", "-FocalLength", str(sample_arw)],
+        capture_output=True, text=True, check=False,
+    )
+    try:
+        focal_mm = float(focal_result.stdout.strip())
+    except ValueError:
+        focal_mm = config.DEVELOP_FALLBACK_FOCAL_MM  # if the sample's own focal length can't be read
+
     with tempfile.TemporaryDirectory(prefix="pics-selftest-") as tmp_str:
         tmp = Path(tmp_str)
         dark = tmp / "ev0.jpg"
         bright = tmp / "ev2.jpg"
-        r0 = develop(sample_arw, 0.0, dark)
-        r2 = develop(sample_arw, 2.0, bright)
+        r0 = develop(sample_arw, 0.0, dark, focal_mm=focal_mm)
+        r2 = develop(sample_arw, 2.0, bright, focal_mm=focal_mm)
         if not (r0.ok and r2.ok):
             raise TemplateError(f"selftest render failed: {r0.error or r2.error}")
 
