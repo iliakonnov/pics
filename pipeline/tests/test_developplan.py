@@ -74,6 +74,23 @@ def test_real_continuous_burst_not_a_bracket():
     assert is_exposure_bracket(group) is False
 
 
+def test_real_continuous_burst_shutter_drift_not_a_bracket():
+    # Real b0325: 36 frames at a near-constant 1/500s, ISO 125, f1.8 --
+    # ReleaseMode2=1 (continuous burst) throughout -- but the camera's own
+    # metering blipped to 1/400 then 1/640 mid-burst (>=0.3 EV each way
+    # from the median), which the shutter-cycling heuristic alone reads as
+    # a deliberate bracket. ReleaseMode2=1 must short-circuit before the
+    # heuristic ever runs.
+    times = [0.002] * 36
+    times[9] = 0.0025  # 1/400
+    times[16] = 0.0015625  # 1/640
+    group = [
+        raw(7588 + i, dt=BASE + timedelta(milliseconds=i * 95), seq_num=i + 1, release_mode2=1, exposure_time=t)
+        for i, t in enumerate(times)
+    ]
+    assert is_exposure_bracket(group) is False
+
+
 def test_release_mode2_26_tag_alone_does_not_trigger_bracket_detection():
     # Real DSC03020-22 files carry ReleaseMode2=26 but are 30-70s apart
     # (separate deliberate manual shots, never grouped together in

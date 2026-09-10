@@ -68,8 +68,15 @@ def is_exposure_bracket(group: list[MediaMeta]) -> bool:
     modes = {f.release_mode2 for f in group if f.release_mode2 is not None}
     if modes & config.SONY_BRACKET_RELEASE_MODES:
         return True
-    if modes and modes.issubset({3}):
-        # DRO/WB bracketing: frames share one exposure, not an EV bracket.
+    if modes and modes.issubset({1, 3}):
+        # ReleaseMode2 says plainly "continuous burst" (1) or "DRO/WB
+        # bracket" (3) -- both share one exposure, never an EV bracket.
+        # Trust this over the heuristic fallback below: a long continuous
+        # burst's own auto-exposure can drift a notch mid-burst (a real
+        # 36-frame ~1/500s burst had two incidental blips to 1/400 and
+        # 1/640), which reads exactly like a deliberate cycling bracket to
+        # the heuristic and got the whole burst wrongly excluded from
+        # develop's shared-EV handling and from clip/preview generation.
         return False
     return _heuristic_bracket(group)
 
