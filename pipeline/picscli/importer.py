@@ -9,6 +9,7 @@ the pure pieces it calls into.
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import string
@@ -265,6 +266,11 @@ def run_import(
 ) -> str:
     jobs = jobs or default_jobs()
     mp4_min_seconds = config.BURST_MP4_MIN_SECONDS if mp4_min_seconds is None else mp4_min_seconds
+    if mp4_min_seconds <= 0:
+        # "0 disables": no finite burst duration can satisfy `>= inf`, so
+        # this reads as "never long enough for a clip" rather than
+        # "every burst is long enough" (which `>= 0` would otherwise mean).
+        mp4_min_seconds = math.inf
     tool_errors = metadata.check_tools_available()
     if tool_errors:
         raise RuntimeError("missing required tools:\n" + "\n".join(f"  - {e}" for e in tool_errors))
