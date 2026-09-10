@@ -329,8 +329,19 @@ def _to_windows_path(path: Path) -> str:
     source ARW, already there if photos live on a Windows drive) or under
     config.DEVELOP_WINDOWS_TEMP_DIR (where the sidecar/output/configdir are
     deliberately staged for this reason; see develop()).
+
+    `-m` ("mixed", drive-letter form with forward slashes, e.g.
+    "C:/Users/...") rather than `-w` (backslashes): confirmed on a real
+    render that WSL's interop silently drops every backslash when handing
+    an argument to a native .exe, which turned e.g.
+    "C:\\Users\\...\\out.jpg" into the single path component
+    "C:Users...out.jpg" -- darktable-cli happily "exported" to that
+    mangled, nonexistent-directory path and exited 0, so the corruption
+    was otherwise silent. Win32/GLib path handling (which darktable-cli is
+    built on) accepts forward slashes just fine, and they survive interop
+    untouched.
     """
-    result = subprocess.run(["wslpath", "-w", str(path)], capture_output=True, text=True, check=True)
+    result = subprocess.run(["wslpath", "-m", str(path)], capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
 
