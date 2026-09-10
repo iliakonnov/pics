@@ -53,7 +53,7 @@ def main() -> None:
 
 
 @main.command("import")
-@click.argument("card_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("card_roots", nargs=-1, required=True, type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--title", default=None, help="Album title (default: capture date)")
 @click.option("--album-id", default=None, help="Reuse a specific album id (to resume an interrupted import)")
 @click.option("-j", "--jobs", default=None, type=int, help="Parallel workers (default: one per core)")
@@ -101,7 +101,7 @@ def main() -> None:
 )
 @library_option
 def import_cmd(
-    card_root: Path,
+    card_roots: tuple[Path, ...],
     title: str | None,
     album_id: str | None,
     jobs: int | None,
@@ -114,11 +114,11 @@ def import_cmd(
     skip_raw: bool,
     library: str | None,
 ) -> None:
-    """Import JPEGs/RAWs/videos from CARD_ROOT as one new album."""
+    """Import JPEGs/RAWs/videos from one or more CARD_ROOTS as one new album."""
     settings = _settings(library)
     try:
         result_id = importer.run_import(
-            card_root,
+            card_roots,
             settings,
             title=title,
             album_id=album_id,

@@ -127,6 +127,13 @@ pics setup-bucket
 # (see below); camera JPEGs alongside an ARW of the same name are skipped.
 pics import /run/media/$USER/SONY_CARD --title "Выходные на море"
 
+# Several DCIM folders (e.g. one per shooting day) become one album in a
+# single call: grouping, cover selection and face clustering all need to
+# see every frame at once, so importing each folder separately -- even
+# into the same --album-id -- rewrites album.json from scratch each time
+# and leaves only the last folder's frames in it.
+pics import /run/media/$USER/SONY_CARD/DCIM/1000904 /run/media/$USER/SONY_CARD/DCIM/1010905
+
 # Optional extras, each needing its own heavy dependency:
 #   --best-frame  choose each burst's cover (mediapipe)
 #   --faces       group photos by person and show a face filter (insightface)
@@ -173,11 +180,14 @@ Uploads run in parallel too (`-j`, default two per core): an album is
 thousands of small files, where one round trip at a time is dominated by
 latency rather than bandwidth.
 
-Re-running `pics import` with the *same* `--album-id` resumes or repairs an
-interrupted run rather than starting a new album; existing derivatives are
-left alone. Duplicates are removed only *within* one import (the same file
-copied twice onto the card) — the same photos may legitimately be imported
-again later into a fresh album.
+Re-running `pics import` with the *same* `--album-id` **and the same
+CARD_ROOTS** resumes or repairs an interrupted run rather than starting a
+new album; existing derivatives are left alone. It is not a way to grow an
+album incrementally with different folders on separate calls — each call
+rebuilds album.json from only the CARD_ROOTS it was given, so pass every
+folder at once instead (see above). Duplicates are removed only *within*
+one import (the same file copied twice onto the card) — the same photos
+may legitimately be imported again later into a fresh album.
 
 ## 5. How it works
 

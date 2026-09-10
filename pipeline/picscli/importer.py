@@ -15,6 +15,7 @@ import string
 import shutil
 import tempfile
 import threading
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -247,7 +248,7 @@ def _build_preview(group: list[MediaMeta], frames: list[album_mod.Frame], album_
 
 
 def run_import(
-    card_root: Path,
+    card_roots: Sequence[Path],
     settings: config.Settings,
     *,
     title: str | None = None,
@@ -268,7 +269,12 @@ def run_import(
     if tool_errors:
         raise RuntimeError("missing required tools:\n" + "\n".join(f"  - {e}" for e in tool_errors))
 
-    files = scan.find_media_files(card_root)
+    # Several card_roots become one album: gathered up front so grouping,
+    # face clustering and cover selection all see the full combined set in
+    # a single pass, and album.json is written exactly once, complete --
+    # not once per root, which would each overwrite the last with only
+    # that root's frames.
+    files = sorted({f for root in card_roots for f in scan.find_media_files(root)})
     if skip_raw:
         files = [p for p in files if p.suffix.lower() not in config.RAW_EXTENSIONS]
     else:
@@ -277,7 +283,8 @@ def run_import(
         if before != len(files):
             log(f"  dropped {before - len(files)} camera JPEG(s) with a raw sibling")
     if not files:
-        raise RuntimeError(f"no JPEG/RAW/video files found under {card_root}")
+        roots_desc = ", ".join(str(r) for r in card_roots)
+        raise RuntimeError(f"no JPEG/RAW/video files found under {roots_desc}")
     log(f"found {len(files)} file(s)")
 
     log("reading metadata (exiftool)...")
