@@ -270,6 +270,18 @@ def check_available() -> list[str]:
     errors = []
     if shutil.which(config.DARKTABLE_BIN) is None:
         errors.append(f"'{config.DARKTABLE_BIN}' (darktable-cli) not found on PATH")
+    if _is_windows_binary(config.DARKTABLE_BIN):
+        if shutil.which("wslpath") is None:
+            errors.append(
+                "PICS_DARKTABLE points at a .exe but 'wslpath' isn't available -- "
+                "this split setup (native darktable-cli.exe, everything else in WSL) requires WSL"
+            )
+        if not config.DEVELOP_WINDOWS_TEMP_DIR:
+            errors.append(
+                "PICS_DARKTABLE points at a .exe but PICS_DEVELOP_WINDOWS_TEMP_DIR isn't set -- "
+                "darktable-cli.exe can't see a plain WSL tempdir; point it at a Windows-visible "
+                "path, e.g. /mnt/c/Users/<you>/AppData/Local/Temp/pics-develop"
+            )
     if shutil.which(config.DCRAW_EMU_BIN) is None:
         errors.append(f"'{config.DCRAW_EMU_BIN}' (dcraw_emu, from LibRaw) not found on PATH")
     if not check_lensfun_zv1_profile():
@@ -297,14 +309,44 @@ class DevelopResult:
     seconds: float = 0.0
 
 
+def _is_windows_binary(bin_path: str) -> bool:
+    """True for a native darktable-cli.exe invoked from WSL.
+
+    In that split setup darktable-cli runs as a real Windows process (for
+    working GPU/OpenCL access -- WSLg's OpenCL passthrough is unreliable),
+    while everything else (this script, exiftool, ffmpeg, ...) stays in
+    WSL. A Windows process can't resolve WSL's own /-rooted paths, so its
+    arguments need translating; see _to_windows_path().
+    """
+    return bin_path.lower().endswith(".exe")
+
+
+def _to_windows_path(path: Path) -> str:
+    """Translate a WSL path to the Windows form darktable-cli.exe needs.
+
+    Only called when config.DARKTABLE_BIN is a .exe. Requires the path to
+    actually be reachable from Windows -- i.e. under /mnt/<drive>/ (the
+    source ARW, already there if photos live on a Windows drive) or under
+    config.DEVELOP_WINDOWS_TEMP_DIR (where the sidecar/output/configdir are
+    deliberately staged for this reason; see develop()).
+    """
+    result = subprocess.run(["wslpath", "-w", str(path)], capture_output=True, text=True, check=True)
+    return result.stdout.strip()
+
+
 def _run_darktable_cli(
     arw: Path, xmp: Path, dst: Path, configdir: Path, *, opencl: bool, jobs: int
 ) -> subprocess.CompletedProcess:
+    windows_exe = _is_windows_binary(config.DARKTABLE_BIN)
+    arw_arg = _to_windows_path(arw) if windows_exe else str(arw)
+    xmp_arg = _to_windows_path(xmp) if windows_exe else str(xmp)
+    dst_arg = _to_windows_path(dst) if windows_exe else str(dst)
+    configdir_arg = _to_windows_path(configdir) if windows_exe else str(configdir)
     cmd = [
         config.DARKTABLE_BIN,
-        str(arw),
-        str(xmp),
-        str(dst),
+        arw_arg,
+        xmp_arg,
+        dst_arg,
         "--width", "0",
         "--height", "0",
         "--hq", "true",
@@ -312,7 +354,7 @@ def _run_darktable_cli(
         "--apply-custom-presets", "false",
         "--icc-type", "SRGB",
         "--core",
-        "--configdir", str(configdir),
+        "--configdir", configdir_arg,
         "--conf", f"plugins/imageio/format/jpeg/quality={config.DEVELOP_JPEG_QUALITY}",
         "--conf", "plugins/darkroom/workflow=none",
         "--conf", "write_sidecar_files=never",
@@ -370,7 +412,15 @@ def develop(
     template_text = patch_exposure_ev(TEMPLATE_PATH.read_text(), ev)
     template_text = patch_lens_focal(template_text, focal_mm, aperture)
 
-    with tempfile.TemporaryDirectory(prefix="pics-develop-") as tmp_str:
+    # A native darktable-cli.exe can't see WSL's own tempdir (it isn't a
+    # Windows path); stage the sidecar/output/configdir under a
+    # Windows-visible directory instead. The ARW itself isn't touched here
+    # -- it's translated in place by _run_darktable_cli, and must already
+    # live under /mnt/<drive>/ for that to work.
+    windows_tmp_root = config.DEVELOP_WINDOWS_TEMP_DIR
+    if windows_tmp_root:
+        Path(windows_tmp_root).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="pics-develop-", dir=windows_tmp_root) as tmp_str:
         tmp = Path(tmp_str)
         xmp_path = tmp / "develop.xmp"
         xmp_path.write_text(template_text)

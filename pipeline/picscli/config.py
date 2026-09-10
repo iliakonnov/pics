@@ -19,6 +19,44 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
+def _load_dotenv(path: Path) -> dict[str, str]:
+    """Minimal KEY=VALUE .env parser (no external dependency)."""
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _find_dotenv(start: Path) -> Path | None:
+    """Look for .env in the current directory and its parents.
+
+    Credentials live at the top of the checkout, but `pics` is just as
+    likely to be run from pipeline/ or anywhere else inside it.
+    """
+    for directory in [start, *start.parents]:
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+# Apply .env into the real environment *before* any of the os.environ.get()
+# constants below are evaluated -- otherwise every PICS_* tool-path/flag
+# override (as opposed to the S3/Yandex credentials in Settings, which are
+# merged separately in load_settings()) would only ever work as a real shell
+# env var and silently ignore .env. A real env var still wins over .env.
+_dotenv_path = _find_dotenv(Path.cwd())
+if _dotenv_path:
+    for _k, _v in _load_dotenv(_dotenv_path).items():
+        os.environ.setdefault(_k, _v)
+
 # --- external tools -------------------------------------------------------
 
 EXIFTOOL_BIN = os.environ.get("PICS_EXIFTOOL", "exiftool")
@@ -159,6 +197,14 @@ DEVELOP_JOBS = 2
 DEVELOP_OPENCL_FIRST = os.environ.get("PICS_DEVELOP_OPENCL_FIRST", "0") == "1"
 DEVELOP_TIMEOUT_SECONDS = 300
 
+# Set only for the WSL-hosted / native-Windows-darktable-cli.exe split setup:
+# a Windows-visible directory (given as its WSL path, e.g.
+# "/mnt/c/Users/<user>/AppData/Local/Temp/pics-develop") to stage the XMP
+# sidecar and rendered JPEG in, instead of the default WSL-internal tempdir.
+# darktable-cli.exe is a native Windows process and can't resolve a plain
+# /tmp path; see develop._is_windows_binary().
+DEVELOP_WINDOWS_TEMP_DIR = os.environ.get("PICS_DEVELOP_WINDOWS_TEMP_DIR")
+
 # Exposure analysis (rawanalysis.py): target the raw's median luminance at
 # this fraction of full scale, but never push the 99.5th percentile past
 # the highlight ceiling -- sigmoid rolls off gracefully above 1.0, so a
@@ -203,33 +249,6 @@ class Settings:
 
     def album_dir(self, album_id: str) -> Path:
         return self.albums_dir / album_id
-
-
-def _load_dotenv(path: Path) -> dict[str, str]:
-    """Minimal KEY=VALUE .env parser (no external dependency)."""
-    values: dict[str, str] = {}
-    if not path.is_file():
-        return values
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
-
-
-def _find_dotenv(start: Path) -> Path | None:
-    """Look for .env in the current directory and its parents.
-
-    Credentials live at the top of the checkout, but `pics` is just as
-    likely to be run from pipeline/ or anywhere else inside it.
-    """
-    for directory in [start, *start.parents]:
-        candidate = directory / ".env"
-        if candidate.is_file():
-            return candidate
-    return None
 
 
 def load_settings(library_root: Path | None = None, env_file: Path | None = None) -> Settings:

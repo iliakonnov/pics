@@ -53,6 +53,24 @@ driver that merely *claims* OpenCL support without a real device behind it
 doesn't make darktable fail, it just makes every frame take minutes instead
 of ~15-30 seconds.
 
+**On Windows with WSL**: WSL2's own OpenCL passthrough to the GPU is
+unreliable, so run everything except darktable natively in WSL, but point
+`PICS_DARKTABLE` at the real Windows build (`darktable-cli.exe`) so it gets
+a proper driver and real GPU access — WSL can invoke a Windows `.exe`
+directly. That native process can't resolve WSL's own paths, though, so
+also set `PICS_DEVELOP_WINDOWS_TEMP_DIR` to a Windows-visible directory
+given as its WSL path, e.g.:
+
+```sh
+PICS_DARKTABLE=/mnt/c/Program\ Files/darktable/bin/darktable-cli.exe
+PICS_DEVELOP_WINDOWS_TEMP_DIR=/mnt/c/Users/<you>/AppData/Local/Temp/pics-develop
+```
+
+The source ARWs themselves must also live under `/mnt/<drive>/...` (i.e. on
+a real Windows drive, not inside WSL's own filesystem) for the same reason.
+`pics import` checks both of these up front and fails with a clear message
+if either is missing.
+
 ## 2. Python setup
 
 ```sh
