@@ -143,7 +143,17 @@ VIDEO_PREVIEW_SAMPLE_FRAMES = 16
 # 10-frame burst is only 0.9s, so this threshold decides how many clips
 # an album gets. See --mp4-min-seconds.
 # Cover selection (optional; needs mediapipe + opencv).
-FACE_LANDMARK_MODEL = str(Path(__file__).resolve().parent.parent / "models" / "face_landmarker.task")
+#
+# Override with PICS_FACE_LANDMARK_MODEL when the checkout lives on a
+# filesystem mediapipe can't mmap the model from -- confirmed on a WSL
+# checkout mounted from a Windows drive (virtiofs/9p): mmap() on the
+# model file there fails with "[Errno 19] No such device", while the
+# identical file copied to WSL's own native filesystem mmaps fine. Point
+# the override at a copy under e.g. ~/.cache in that case.
+FACE_LANDMARK_MODEL = os.environ.get(
+    "PICS_FACE_LANDMARK_MODEL",
+    str(Path(__file__).resolve().parent.parent / "models" / "face_landmarker.task"),
+)
 QUALITY_SCAN_SCALE = 0.25   # detection is unaffected; decoding dominates anyway
 QUALITY_MAX_FACES = 6
 # Eyes are not simply open or shut: a score of 0.38 is a half-closed,
