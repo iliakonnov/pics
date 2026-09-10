@@ -389,8 +389,6 @@ def run_import(
                     )
                     if not result.ok:
                         raise RuntimeError(f"failed to develop {plan.path.name}: {result.error}")
-                    if result.used_fallback:
-                        log(f"  {plan.path.name}: developed via fallback ({result.used_fallback})")
                     with save_lock:
                         developed_records[plan.file_hash] = {"ev": plan.ev, "params": template_fp}
                         completed += 1

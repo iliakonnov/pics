@@ -304,7 +304,6 @@ class DevelopResult:
     source: Path
     dest: Path
     ok: bool
-    used_fallback: str | None = None
     error: str | None = None
     seconds: float = 0.0
 
@@ -384,17 +383,6 @@ def _run_darktable_cli(
     )
 
 
-def _extract_embedded_preview(arw: Path, dst: Path) -> bool:
-    result = subprocess.run(
-        [config.EXIFTOOL_BIN, "-b", "-PreviewImage", str(arw)],
-        capture_output=True, check=False,
-    )
-    if result.returncode != 0 or not result.stdout:
-        return False
-    dst.write_bytes(result.stdout)
-    return True
-
-
 def develop(
     arw: Path,
     ev: float,
@@ -414,9 +402,13 @@ def develop(
     --develop-jobs), used only to divide CPU threads evenly between
     instances -- it does not change what this call itself does.
 
-    Never raises: failures are reported in the returned DevelopResult with
-    a fallback chain (sibling out-of-camera JPEG, then the ARW's own
-    embedded preview) so a bad frame doesn't stall the whole import.
+    Never raises itself: a failure comes back as DevelopResult(ok=False,
+    error=...) for the caller to act on. There is deliberately no fallback
+    to the sibling out-of-camera JPEG or the ARW's embedded preview -- an
+    undeveloped frame silently passed off as the real "original" is worse
+    than a loud failure (this is exactly how a batch of GPU-contention
+    failures under a too-high --develop-jobs went unnoticed until upload).
+    importer.py treats ok=False as fatal for the whole import.
     """
     start = time.monotonic()
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -456,23 +448,6 @@ def develop(
                 imaging.to_progressive_jpeg(raw_out, dst)
                 return DevelopResult(source=arw, dest=dst, ok=True, seconds=time.monotonic() - start)
             last_error = result.stderr.strip()[-2000:] or f"exit code {result.returncode}"
-
-        sibling_jpg = arw.with_suffix(".JPG")
-        if not sibling_jpg.is_file():
-            sibling_jpg = arw.with_suffix(".jpg")
-        if sibling_jpg.is_file():
-            imaging.to_progressive_jpeg(sibling_jpg, dst)
-            return DevelopResult(
-                source=arw, dest=dst, ok=True, used_fallback="sibling_jpg",
-                error=last_error, seconds=time.monotonic() - start,
-            )
-
-        if _extract_embedded_preview(arw, raw_out):
-            imaging.to_progressive_jpeg(raw_out, dst)
-            return DevelopResult(
-                source=arw, dest=dst, ok=True, used_fallback="embedded_preview",
-                error=last_error, seconds=time.monotonic() - start,
-            )
 
         return DevelopResult(source=arw, dest=dst, ok=False, error=last_error, seconds=time.monotonic() - start)
 
